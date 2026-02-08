@@ -11,6 +11,8 @@ use ruff_source_file::LineIndex;
 use ruff_text_size::{Ranged, TextRange};
 
 use crate::func_effect_visitor;
+use crate::options::Options;
+use crate::reachability::TruthValue;
 use crate::type_comment;
 
 /// Syntax error information with location details
@@ -111,6 +113,9 @@ const TAG_STARRED_PATTERN: u8 = 222;
 const TAG_MAPPING_PATTERN: u8 = 223;
 const TAG_CLASS_PATTERN: u8 = 224;
 const TAG_TYPE_ALIAS_STMT: u8 = 225;
+const TAG_IMPORT_METADATA: u8 = 226;
+const TAG_IMPORTFROM_METADATA: u8 = 227;
+const TAG_IMPORTALL_METADATA: u8 = 228;
 const TAG_UNBOUND_TYPE: u8 = 104;
 const TAG_UNION_TYPE: u8 = 115;
 const TAG_LIST_TYPE: u8 = 118;
@@ -149,6 +154,7 @@ const LONG_INT_TRAILER: u8 = 15;
 /// * `file_path` - Path to the Python file to parse and serialize
 /// * `skip_function_bodies` - If true, omit function bodies unless they have externally visible effects
 ///   (for methods in classes only; module-level functions always have bodies omitted when this is true)
+/// * `options` - Reachability analysis options (python version, platform and always-true/-false names)
 ///
 /// # Returns
 ///
@@ -163,7 +169,8 @@ const LONG_INT_TRAILER: u8 = 15;
 pub(crate) fn serialize_python_file(
     file_path: &Path,
     skip_function_bodies: bool,
-) -> Result<(Vec<u8>, Vec<SyntaxError>, Vec<(usize, Vec<String>)>)> {
+    options: Options,
+) -> Result<(Vec<u8>, Vec<SyntaxError>, Vec<(usize, Vec<String>)>, Vec<u8>)> {
     let source_type = PySourceType::from(file_path);
     let source_text = std::fs::read_to_string(file_path)?;
     let line_index = LineIndex::from_source_text(&source_text);
@@ -202,45 +209,75 @@ pub(crate) fn serialize_python_file(
     let mut ser = Serializer {
         bytes: Vec::new(),
         imports: Vec::new(),
-        import_froms: Vec::new(),
         line_index,
         text: &source_text,
         skip_function_bodies,
         in_class: false,
+        in_function: false,
         is_all_ascii,
         lines_with_non_ascii,
         type_comments,
+        options,
+        current_unreachable: false,
+        current_mypy_only: false,
     };
     parsed.syntax().serialize(&mut ser);
 
-    Ok((ser.bytes, syntax_errors, type_ignore_lines))
+    // Serialize the collected imports, reusing the moved state from serializer
+    let import_bytes = serialize_imports(
+        &ser.imports,
+        &source_text,
+        Some(ser.line_index),
+        Some(is_all_ascii),
+        Some(ser.lines_with_non_ascii),
+    );
+
+    Ok((ser.bytes, syntax_errors, type_ignore_lines, import_bytes))
 }
+
+// Bit flags for import statement metadata
+const IMPORT_FLAG_TOP_LEVEL: u8 = 1 << 0;    // true if import is not within a function
+const IMPORT_FLAG_UNREACHABLE: u8 = 1 << 1;  // true if import is in unreachable code
+const IMPORT_FLAG_MYPY_ONLY: u8 = 1 << 2;    // true if import is mypy-only (e.g., in TYPE_CHECKING block)
 
 // Used to report which imports are used in a file
-struct Import {
-    name: String,
-    relative: i32,           // Number of dots in relative import 'import ..x'
-    as_name: Option<String>, // Set for 'import x as y'
-}
-
-// Used to report which from...import statements are used in a file
-struct ImportFrom {
-    module: String, // Module being imported from (empty string for "from . import x")
-    relative: i32,  // Number of dots in relative import
-    names: Vec<(String, Option<String>)>, // List of (name, as_name) tuples
+enum ImportStatement {
+    Import {
+        name: String,
+        relative: i32,           // Number of dots in relative import 'import ..x'
+        as_name: Option<String>, // Set for 'import x as y'
+        range: TextRange,        // Source range of the import alias
+        flags: u8,               // Bitfield of IMPORT_FLAG_* constants
+    },
+    ImportFrom {
+        module: String, // Module being imported from (empty string for "from . import x")
+        relative: i32,  // Number of dots in relative import
+        names: Vec<(String, Option<String>)>, // List of (name, as_name) tuples
+        range: TextRange, // Source range of the entire import statement
+        flags: u8,       // Bitfield of IMPORT_FLAG_* constants
+    },
+    ImportAll {
+        module: String,   // Module being imported from (empty string for "from . import *")
+        relative: i32,    // Number of dots in relative import
+        range: TextRange, // Source range of the entire import statement
+        flags: u8,        // Bitfield of IMPORT_FLAG_* constants
+    },
 }
 
 struct Serializer<'a> {
     bytes: Vec<u8>,
-    imports: Vec<Import>,          // Encountered import statements
-    import_froms: Vec<ImportFrom>, // Encountered from...import statements
+    imports: Vec<ImportStatement>, // Encountered import statements
     line_index: LineIndex,
     text: &'a str,
     skip_function_bodies: bool, // Whether to omit function bodies without visible effects
     in_class: bool,             // Whether we're currently inside a class definition
+    in_function: bool,          // Whether we're currently inside a function definition
     is_all_ascii: bool,         // Whether the entire file contains only ASCII characters
     lines_with_non_ascii: Vec<bool>, // Per-line flags: true if line has non-ASCII (empty if is_all_ascii)
     type_comments: HashMap<usize, ast::Expr>, // Type comments by line number (1-indexed)
+    options: Options,           // Reachability analysis options
+    current_unreachable: bool,  // Whether we're currently in an unreachable block
+    current_mypy_only: bool,    // Whether we're currently in a mypy-only block (e.g., if TYPE_CHECKING)
 }
 
 impl<'a> Serializer<'a> {
@@ -395,6 +432,7 @@ impl<'a> Serializer<'a> {
         self.write_tag(TAG_BLOCK);
         self.write_tag(TAG_LIST_GEN);
         self.write_usize(block.len());
+        self.write_bool(self.current_unreachable);
         for stmt in block {
             stmt.serialize(self);
         }
@@ -405,9 +443,11 @@ impl<'a> Serializer<'a> {
         self.write_tag(TAG_BLOCK);
         self.write_tag(TAG_LIST_GEN);
         self.write_int(0); // Empty list of statements
+        self.write_bool(self.current_unreachable);
         self.write_location(range); // Write location after zero-length list
         self.write_end_tag();
     }
+
 }
 
 trait Ser {
@@ -826,6 +866,10 @@ impl Ser for ast::Stmt {
                     true
                 };
 
+                // Body - mark that we're inside a function
+                let was_in_function = ser.in_function;
+                ser.in_function = true;
+
                 if should_serialize_body {
                     if f.body.is_empty() {
                         // Empty body due to syntax error - use serialize_empty_block
@@ -843,6 +887,8 @@ impl Ser for ast::Stmt {
                     };
                     ser.serialize_empty_block(body_range);
                 }
+
+                ser.in_function = was_in_function;
 
                 ser.write_bool(f.is_async);
 
@@ -971,10 +1017,12 @@ impl Ser for ast::Stmt {
                     } else {
                         ser.write_bool(false);
                     }
-                    ser.imports.push(Import {
+                    ser.imports.push(ImportStatement::Import {
                         name: name.name.to_string(),
                         relative: 0, // Not a relative import
                         as_name: name.asname.as_ref().map(|n| n.to_string()),
+                        range: name.range,
+                        flags: make_import_flags(ser),
                     });
                 }
                 ser.write_location(i.range());
@@ -992,6 +1040,17 @@ impl Ser for ast::Stmt {
                     ser.write_tagged_int(ifrom.level as i64);
 
                     ser.write_location(ifrom.range());
+
+                    // Track in imports list for dependency tracking
+                    ser.imports.push(ImportStatement::ImportAll {
+                        module: ifrom
+                            .module
+                            .as_ref()
+                            .map_or(String::new(), |m| m.to_string()),
+                        relative: ifrom.level as i32,
+                        range: ifrom.range(),
+                        flags: make_import_flags(ser),
+                    });
                 } else {
                     // Regular from...import statement
                     ser.write_tag(TAG_IMPORT_FROM);
@@ -1025,14 +1084,16 @@ impl Ser for ast::Stmt {
                         ));
                     }
 
-                    // Track in import_froms list for dependency tracking
-                    ser.import_froms.push(ImportFrom {
+                    // Track in imports list for dependency tracking
+                    ser.imports.push(ImportStatement::ImportFrom {
                         module: ifrom
                             .module
                             .as_ref()
                             .map_or(String::new(), |m| m.to_string()),
                         relative: ifrom.level as i32,
                         names,
+                        range: ifrom.range(),
+                        flags: make_import_flags(ser),
                     });
 
                     ser.write_location(ifrom.range());
@@ -1059,30 +1120,7 @@ impl Ser for ast::Stmt {
                 a.msg.serialize(ser);
                 ser.write_location(a.range());
             }
-            ast::Stmt::If(s) => {
-                ser.write_tag(TAG_IF);
-                s.test.serialize(ser);
-                ser.serialize_block(&s.body);
-                let has_else = s.elif_else_clauses.last().is_some_and(|v| v.test.is_none());
-                let num_elif = s.elif_else_clauses.len() - if has_else { 1 } else { 0 };
-                ser.write_tagged_int(num_elif as i64);
-                for ee in &s.elif_else_clauses {
-                    match &ee.test {
-                        Some(e) => {
-                            e.serialize(ser);
-                            ser.serialize_block(&ee.body);
-                        }
-                        None => {
-                            ser.write_bool(true);
-                            ser.serialize_block(&ee.body);
-                        }
-                    }
-                }
-                if !has_else {
-                    ser.write_bool(false);
-                }
-                ser.write_location(s.range());
-            }
+            ast::Stmt::If(s) => serialize_if_stmt(ser, s),
             ast::Stmt::While(s) => {
                 ser.write_tag(TAG_WHILE);
                 s.test.serialize(ser);
@@ -1371,6 +1409,159 @@ impl Ser for ast::Stmt {
         };
         ser.write_end_tag()
     }
+}
+
+fn is_always_or_mypy_false(truth: TruthValue) -> bool {
+    matches!(truth, TruthValue::AlwaysFalse | TruthValue::MypyFalse)
+}
+
+fn is_always_or_mypy_true(truth: TruthValue) -> bool {
+    matches!(truth, TruthValue::AlwaysTrue | TruthValue::MypyTrue)
+}
+
+/// Stateful reachability analyzer for if/elif/else chains.
+///
+/// This is intentionally kept separate from serialization so emit logic can
+/// eventually call it in sequence:
+/// - `condition_flags(expr)` for each if/elif condition
+/// - `else_flags()` for the optional else block
+#[allow(dead_code)]
+struct IfReachabilityAnalyzer<'a> {
+    options: &'a Options,
+    tail_unreachable: bool,
+    seen_mypy_true: bool,
+    seen_mypy_false: bool,
+}
+
+#[allow(dead_code)]
+impl<'a> IfReachabilityAnalyzer<'a> {
+    fn new(options: &'a Options) -> Self {
+        Self {
+            options,
+            tail_unreachable: false,
+            seen_mypy_true: false,
+            seen_mypy_false: false,
+        }
+    }
+
+    /// Analyze one if/elif condition and advance analyzer state.
+    ///
+    /// Returns `(unreachable, mypy_only)` for the corresponding block.
+    fn condition_flags(&mut self, expr: &ast::Expr) -> (bool, bool) {
+        let truth = crate::reachability::infer_condition_value(expr, &self.options);
+
+        let unreachable = self.tail_unreachable || is_always_or_mypy_false(truth);
+        let mypy_only =
+            !unreachable && !self.seen_mypy_true && truth == TruthValue::MypyTrue;
+
+        self.tail_unreachable = self.tail_unreachable || is_always_or_mypy_true(truth);
+        self.seen_mypy_true = self.seen_mypy_true || truth == TruthValue::MypyTrue;
+        self.seen_mypy_false = self.seen_mypy_false || truth == TruthValue::MypyFalse;
+
+        (unreachable, mypy_only)
+    }
+
+    /// Returns `(unreachable, mypy_only)` for the else block.
+    fn else_flags(&self) -> (bool, bool) {
+        let unreachable = self.tail_unreachable;
+        let mypy_only = !unreachable && self.seen_mypy_false && !self.seen_mypy_true;
+        (unreachable, mypy_only)
+    }
+}
+
+#[inline(always)]
+fn with_branch_flags(
+    ser: &mut Serializer,
+    branch_unreachable: bool,
+    branch_mypy_only: bool,
+    f: impl FnOnce(&mut Serializer),
+) {
+    let old_unreachable = ser.current_unreachable;
+    let old_mypy_only = ser.current_mypy_only;
+    ser.current_unreachable = ser.current_unreachable || branch_unreachable;
+    ser.current_mypy_only = ser.current_mypy_only || branch_mypy_only;
+    f(ser);
+    ser.current_unreachable = old_unreachable;
+    ser.current_mypy_only = old_mypy_only;
+}
+
+fn serialize_if_stmt(ser: &mut Serializer, stmt: &ast::StmtIf) {
+    let has_else = stmt
+        .elif_else_clauses
+        .last()
+        .is_some_and(|clause| clause.test.is_none());
+
+    // First analyze reachability of each block
+    let (main_flags, clause_flags, synthetic_else_flags) = {
+        let mut analyzer = IfReachabilityAnalyzer::new(&ser.options);
+        let main_flags = analyzer.condition_flags(&stmt.test);
+        let mut clause_flags = Vec::with_capacity(stmt.elif_else_clauses.len());
+        for clause in &stmt.elif_else_clauses {
+            let flags = match &clause.test {
+                Some(expr) => analyzer.condition_flags(expr),
+                None => analyzer.else_flags(),
+            };
+            clause_flags.push(flags);
+        }
+        let synthetic_else_flags = if has_else {
+            None
+        } else {
+            Some(analyzer.else_flags())
+        };
+        (main_flags, clause_flags, synthetic_else_flags)
+    };
+
+    ser.write_tag(TAG_IF);
+    stmt.test.serialize(ser);
+
+    // Serialize main body with analyzer-provided flags.
+    let (main_body_unreachable, main_body_mypy_only) = main_flags;
+    with_branch_flags(
+        ser,
+        main_body_unreachable,
+        main_body_mypy_only,
+        |ser| ser.serialize_block(&stmt.body),
+    );
+
+    let num_elif = stmt.elif_else_clauses.len() - if has_else { 1 } else { 0 };
+    ser.write_tagged_int(num_elif as i64);
+
+    // Process elif/else clauses
+    for (clause, (branch_unreachable, branch_mypy_only)) in
+        stmt.elif_else_clauses.iter().zip(clause_flags.iter().copied())
+    {
+        match &clause.test {
+            Some(expr) => {
+                // elif clause
+                expr.serialize(ser);
+                with_branch_flags(ser, branch_unreachable, branch_mypy_only, |ser| {
+                    ser.serialize_block(&clause.body)
+                });
+            }
+            None => {
+                // else clause
+                ser.write_bool(true);
+                with_branch_flags(ser, branch_unreachable, branch_mypy_only, |ser| {
+                    ser.serialize_block(&clause.body)
+                });
+            }
+        }
+    }
+
+    if !has_else {
+        let (else_unreachable, else_mypy_only) =
+            synthetic_else_flags.expect("synthetic else flags must exist when there is no else");
+        if else_unreachable {
+            // Serialize an empty block so that we can pass reachability information
+            ser.write_bool(true);
+            with_branch_flags(ser, else_unreachable, else_mypy_only, |ser| {
+                ser.serialize_empty_block(stmt.range())
+            });
+        } else {
+            ser.write_bool(false);
+        }
+    }
+    ser.write_location(stmt.range());
 }
 
 impl Ser for ast::Expr {
@@ -1700,6 +1891,7 @@ impl Ser for ast::Expr {
                 ser.write_tag(TAG_BLOCK);
                 ser.write_tag(TAG_LIST_GEN);
                 ser.write_int(1); // One statement (the return)
+                ser.write_bool(ser.current_unreachable); // Write unreachable flag
 
                 ser.write_tag(TAG_RETURN);
                 // Return statement has an optional value, we always have a value for lambda
@@ -2319,12 +2511,161 @@ fn extract_int_literal_value(expr: &ast::Expr) -> Option<i64> {
     }
 }
 
+/// Build import flags from current serializer state
+fn make_import_flags(ser: &Serializer) -> u8 {
+    (if !ser.in_function { IMPORT_FLAG_TOP_LEVEL } else { 0 })
+        | (if ser.current_unreachable { IMPORT_FLAG_UNREACHABLE } else { 0 })
+        | (if ser.current_mypy_only { IMPORT_FLAG_MYPY_ONLY } else { 0 })
+}
+
+/// Serialize a list of import statements to bytes.
+///
+/// # Arguments
+///
+/// * `imports` - List of import statements to serialize
+/// * `text` - Source text (used for creating LineIndex to serialize ranges)
+/// * `line_index` - Optional pre-computed LineIndex (if None, will be computed from text)
+/// * `is_all_ascii` - Optional pre-computed ASCII flag (if None, will be computed from text)
+/// * `lines_with_non_ascii` - Optional pre-computed per-line non-ASCII flags (if None, will be computed from text)
+///
+/// # Returns
+///
+/// Serialized bytes representing the imports
+pub fn serialize_imports(
+    imports: &[ImportStatement],
+    text: &str,
+    line_index: Option<LineIndex>,
+    is_all_ascii: Option<bool>,
+    lines_with_non_ascii: Option<Vec<bool>>,
+) -> Vec<u8> {
+    let line_index = line_index.unwrap_or_else(|| LineIndex::from_source_text(text));
+    let is_all_ascii = is_all_ascii.unwrap_or_else(|| text.is_ascii());
+    let lines_with_non_ascii = lines_with_non_ascii.unwrap_or_else(|| {
+        if is_all_ascii {
+            Vec::new()
+        } else {
+            text.lines().map(|line| !line.is_ascii()).collect()
+        }
+    });
+
+    let mut ser = Serializer {
+        bytes: Vec::new(),
+        imports: Vec::new(),
+        line_index,
+        text,
+        skip_function_bodies: false,
+        in_class: false,
+        in_function: false,
+        is_all_ascii,
+        lines_with_non_ascii,
+        type_comments: HashMap::new(),
+        options: Options::default(),
+        current_unreachable: false,
+        current_mypy_only: false,
+    };
+
+    // Write list of imports
+    ser.write_tag(TAG_LIST_GEN);
+    ser.write_usize(imports.len());
+
+    for import in imports {
+        match import {
+            ImportStatement::Import {
+                name,
+                relative,
+                as_name,
+                range,
+                flags,
+            } => {
+                ser.write_tag(TAG_IMPORT_METADATA);
+                ser.write_bytes(name.as_bytes());
+                ser.write_tagged_int(*relative as i64);
+                if let Some(asname) = as_name {
+                    ser.write_bool(true);
+                    ser.write_bytes(asname.as_bytes());
+                } else {
+                    ser.write_bool(false);
+                }
+                ser.write_location(*range);
+                ser.write_tagged_int(*flags as i64);
+            }
+            ImportStatement::ImportFrom {
+                module,
+                relative,
+                names,
+                range,
+                flags,
+            } => {
+                ser.write_tag(TAG_IMPORTFROM_METADATA);
+                ser.write_bytes(module.as_bytes());
+                ser.write_tagged_int(*relative as i64);
+
+                // Write list of (name, as_name) tuples
+                ser.write_tag(TAG_LIST_GEN);
+                ser.write_usize(names.len());
+                for (name, as_name) in names {
+                    ser.write_bytes(name.as_bytes());
+                    if let Some(asname) = as_name {
+                        ser.write_bool(true);
+                        ser.write_bytes(asname.as_bytes());
+                    } else {
+                        ser.write_bool(false);
+                    }
+                }
+
+                ser.write_location(*range);
+                ser.write_tagged_int(*flags as i64);
+            }
+            ImportStatement::ImportAll {
+                module,
+                relative,
+                range,
+                flags,
+            } => {
+                ser.write_tag(TAG_IMPORTALL_METADATA);
+                ser.write_bytes(module.as_bytes());
+                ser.write_tagged_int(*relative as i64);
+                ser.write_location(*range);
+                ser.write_tagged_int(*flags as i64);
+            }
+        }
+    }
+
+    ser.bytes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn int_val(x: i64) -> u8 {
         return ((x - MIN_SHORT_INT) << 1) as u8;
+    }
+
+    fn parse_expr_for_test(expr: &str) -> ast::Expr {
+        let parsed = parse_unchecked(expr, ParseOptions::from(Mode::Expression));
+        assert!(
+            parsed.errors().is_empty(),
+            "failed to parse test expression: {expr}"
+        );
+        let ast::Mod::Expression(expr_mod) = parsed.into_syntax() else {
+            panic!("expected expression AST for test input: {expr}");
+        };
+        *expr_mod.body
+    }
+
+    fn analyze_if_chain(condition_exprs: &[&str]) -> (Vec<(bool, bool)>, (bool, bool)) {
+        let options = Options::default();
+        let mut analyzer = IfReachabilityAnalyzer::new(&options);
+        let mut condition_flags = Vec::with_capacity(condition_exprs.len());
+
+        for expr in condition_exprs {
+            let parsed = parse_expr_for_test(expr);
+            condition_flags.push(analyzer.condition_flags(&parsed));
+        }
+
+        let else_flags = analyzer.else_flags();
+        (condition_flags, else_flags)
     }
 
     fn make_ser<'a>(text: &'a str) -> Serializer<'a> {
@@ -2338,14 +2679,69 @@ mod tests {
         Serializer {
             bytes: Vec::new(),
             imports: Vec::new(),
-            import_froms: Vec::new(),
             line_index: index,
             text,
             skip_function_bodies: false,
             in_class: false,
+            in_function: false,
             is_all_ascii,
             lines_with_non_ascii,
             type_comments: HashMap::new(),
+            options: Options::default(),
+            current_unreachable: false,
+            current_mypy_only: false,
+        }
+    }
+
+    #[test]
+    fn test_if_reachability_analyzer_flags() {
+        struct Case {
+            name: &'static str,
+            conditions: &'static [&'static str],
+            expected_condition_flags: &'static [(bool, bool)],
+            expected_else_flags: (bool, bool),
+        }
+
+        let cases = [
+            Case {
+                name: "all_unknown",
+                conditions: &["x", "y"],
+                expected_condition_flags: &[(false, false), (false, false)],
+                expected_else_flags: (false, false),
+            },
+            Case {
+                name: "always_true_makes_tail_unreachable",
+                conditions: &["x", "PY3", "z"],
+                expected_condition_flags: &[(false, false), (false, false), (true, false)],
+                expected_else_flags: (true, false),
+            },
+            Case {
+                name: "mypy_true_is_mypy_only_then_closes_tail",
+                conditions: &["MYPY", "z"],
+                expected_condition_flags: &[(false, true), (true, false)],
+                expected_else_flags: (true, false),
+            },
+            Case {
+                name: "mypy_false_makes_else_mypy_only",
+                conditions: &["x", "not MYPY"],
+                expected_condition_flags: &[(false, false), (true, false)],
+                expected_else_flags: (false, true),
+            },
+        ];
+
+        for case in cases {
+            let (condition_flags, else_flags) = analyze_if_chain(case.conditions);
+            assert_eq!(
+                condition_flags.as_slice(),
+                case.expected_condition_flags,
+                "condition flags mismatch for {}",
+                case.name
+            );
+            assert_eq!(
+                else_flags, case.expected_else_flags,
+                "else flags mismatch for {}",
+                case.name
+            );
         }
     }
 
@@ -2547,5 +2943,51 @@ mod tests {
         ];
 
         assert_eq!(ser.bytes, expected);
+    }
+
+    #[test]
+    fn test_serialize_single_import() {
+        // Create a simple import: "import os" at line 1, columns 0-9
+        let text = "import os\n";
+        let imports = vec![ImportStatement::Import {
+            name: "os".to_string(),
+            relative: 0,
+            as_name: None,
+            range: TextRange::new(0.into(), 9.into()),
+            flags: IMPORT_FLAG_TOP_LEVEL,
+        }];
+
+        let bytes = serialize_imports(&imports, text, None, None, None);
+
+        // Expected byte sequence:
+        // TAG_LIST_GEN (20) + length (1)
+        // TAG_IMPORT_METADATA (226)
+        // name: TAG_LITERAL_STR (4) + length (2) + "os"
+        // relative: TAG_LITERAL_INT (3) + int_val(0)
+        // as_name: TAG_LITERAL_FALSE (0)
+        // range: TAG_LOCATION (152) + line (1) + col (0) + line_diff (0) + col_diff (9)
+        // Note: write_location writes start line, start col, line difference, col difference
+        // flags: TAG_LITERAL_INT (3) + int_val(1) - IMPORT_FLAG_TOP_LEVEL set
+        let expected = vec![
+            TAG_LIST_GEN,
+            int_val(1), // list length = 1
+            TAG_IMPORT_METADATA,
+            TAG_LITERAL_STR,
+            int_val(2), // "os" length
+            b'o',
+            b's',
+            TAG_LITERAL_INT,
+            int_val(0), // relative = 0
+            TAG_LITERAL_FALSE, // no as_name
+            TAG_LOCATION,
+            int_val(1), // start line 1
+            int_val(0), // start column 0 (0-based)
+            int_val(0), // line difference (same line)
+            int_val(9), // column difference (9 chars)
+            TAG_LITERAL_INT, // flags tag
+            int_val(1), // flags: IMPORT_FLAG_TOP_LEVEL (bit 0 set)
+        ];
+
+        assert_eq!(bytes, expected);
     }
 }

@@ -1,3 +1,4 @@
+use crate::options::Options;
 use ruff_python_ast as ast;
 
 /// Inferred truth value of an expression during reachability analysis.
@@ -179,16 +180,16 @@ fn contains_sys_version_info(expr: &ast::Expr) -> Option<SysVersionInfo> {
 }
 
 /// Check if a name corresponds to a special constant with known truth value.
-fn check_name_truth_value(name: &str, always_true: &[String], always_false: &[String]) -> TruthValue {
+fn check_name_truth_value(name: &str, options: &Options) -> TruthValue {
     match name {
         "MYPY" | "TYPE_CHECKING" => TruthValue::MypyTrue,
         "PY2" => TruthValue::AlwaysFalse,
         "PY3" => TruthValue::AlwaysTrue,
         _ => {
             // Check user-provided always_true/always_false lists
-            if always_true.iter().any(|s| s == name) {
+            if options.always_true().iter().any(|s| s == name) {
                 TruthValue::AlwaysTrue
-            } else if always_false.iter().any(|s| s == name) {
+            } else if options.always_false().iter().any(|s| s == name) {
                 TruthValue::AlwaysFalse
             } else {
                 TruthValue::TruthValueUnknown
@@ -251,7 +252,8 @@ fn combine_bool_op(op: ast::BoolOp, values: &[TruthValue]) -> TruthValue {
 }
 
 /// Consider whether expr is a comparison involving sys.version_info.
-pub fn consider_sys_version_info(expr: &ast::Expr, python_version: (u32, u32)) -> TruthValue {
+pub(crate) fn consider_sys_version_info(expr: &ast::Expr, options: &Options) -> TruthValue {
+    let python_version = options.python_version();
     let ast::Expr::Compare(compare) = expr else {
         return TruthValue::TruthValueUnknown;
     };
@@ -354,7 +356,8 @@ pub fn consider_sys_version_info(expr: &ast::Expr, python_version: (u32, u32)) -
 }
 
 /// Consider whether expr is a comparison involving sys.platform.
-pub fn consider_sys_platform(expr: &ast::Expr, platform: &str) -> TruthValue {
+pub(crate) fn consider_sys_platform(expr: &ast::Expr, options: &Options) -> TruthValue {
+    let platform = options.platform();
     match expr {
         ast::Expr::Compare(compare) => {
             // Don't support chained comparisons
@@ -417,44 +420,29 @@ pub fn consider_sys_platform(expr: &ast::Expr, platform: &str) -> TruthValue {
 }
 
 /// Infer whether the given condition is always true/false.
-pub fn infer_condition_value(
+pub(crate) fn infer_condition_value(
     expr: &ast::Expr,
-    python_version: (u32, u32),
-    platform: &str,
-    always_true: &[String],
-    always_false: &[String],
+    options: &Options,
 ) -> TruthValue {
     match expr {
         // Handle unary "not" expressions
         ast::Expr::UnaryOp(unary) if matches!(unary.op, ast::UnaryOp::Not) => {
-            let positive = infer_condition_value(
-                &unary.operand,
-                python_version,
-                platform,
-                always_true,
-                always_false,
-            );
+            let positive = infer_condition_value(&unary.operand, options);
             positive.invert()
         }
 
         // Handle name expressions (e.g., PY3, MYPY, TYPE_CHECKING)
-        ast::Expr::Name(name) => check_name_truth_value(name.id.as_str(), always_true, always_false),
+        ast::Expr::Name(name) => check_name_truth_value(name.id.as_str(), options),
 
         // Handle attribute expressions (e.g., typing.TYPE_CHECKING, sys.platform)
-        ast::Expr::Attribute(attr) => check_name_truth_value(attr.attr.as_str(), always_true, always_false),
+        ast::Expr::Attribute(attr) => check_name_truth_value(attr.attr.as_str(), options),
 
         // Handle boolean operations (and/or)
         ast::Expr::BoolOp(bool_op) => {
             // Infer truth values for all operands
             let mut inferred_values = Vec::with_capacity(bool_op.values.len());
             for value in &bool_op.values {
-                inferred_values.push(infer_condition_value(
-                    value,
-                    python_version,
-                    platform,
-                    always_true,
-                    always_false,
-                ));
+                inferred_values.push(infer_condition_value(value, options));
             }
 
             combine_bool_op(bool_op.op, &inferred_values)
@@ -462,11 +450,11 @@ pub fn infer_condition_value(
 
         // Fallback: try sys.version_info and sys.platform checks
         _ => {
-            let result = consider_sys_version_info(expr, python_version);
+            let result = consider_sys_version_info(expr, options);
             if result != TruthValue::TruthValueUnknown {
                 return result;
             }
-            consider_sys_platform(expr, platform)
+            consider_sys_platform(expr, options)
         }
     }
 }
@@ -506,7 +494,8 @@ mod tests {
             panic!("Expected expression");
         };
 
-        infer_condition_value(&expr_mod.body, (3, 10), "linux", &[], &[])
+        let options = Options::new((3, 10), String::from("linux"), Vec::new(), Vec::new());
+        infer_condition_value(&expr_mod.body, &options)
     }
 
     #[test]
@@ -523,7 +512,13 @@ mod tests {
             let ast::Mod::Expression(expr_mod) = parsed.into_syntax() else {
                 panic!("Expected expression");
             };
-            infer_condition_value(&expr_mod.body, (3, 10), "linux", always_true, always_false)
+            let options = Options::new(
+                (3, 10),
+                String::from("linux"),
+                always_true.to_vec(),
+                always_false.to_vec(),
+            );
+            infer_condition_value(&expr_mod.body, &options)
         };
 
         // Name in always_true list
@@ -660,6 +655,7 @@ mod tests {
     #[test]
     fn test_consider_sys_version_info() {
         use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
+        let options = Options::new((3, 10), String::from("linux"), Vec::new(), Vec::new());
 
         let parse_expr = |code: &str| {
             let parsed = parse_unchecked(code, ParseOptions::from(Mode::Expression));
@@ -671,103 +667,103 @@ mod tests {
 
         // Edge case: exact equality
         assert_eq!(
-            consider_sys_version_info(&parse_expr("sys.version_info[0] == 3"), (3, 10)),
+            consider_sys_version_info(&parse_expr("sys.version_info[0] == 3"), &options),
             TruthValue::AlwaysTrue
         );
 
         // Edge case: one off from target
         assert_eq!(
-            consider_sys_version_info(&parse_expr("sys.version_info[0] == 2"), (3, 10)),
+            consider_sys_version_info(&parse_expr("sys.version_info[0] == 2"), &options),
             TruthValue::AlwaysFalse
         );
 
         // Edge case: >= with exact boundary
         assert_eq!(
-            consider_sys_version_info(&parse_expr("sys.version_info[1] >= 10"), (3, 10)),
+            consider_sys_version_info(&parse_expr("sys.version_info[1] >= 10"), &options),
             TruthValue::AlwaysTrue
         );
 
         // Edge case: < with exact boundary (should be false)
         assert_eq!(
-            consider_sys_version_info(&parse_expr("sys.version_info[0] < 3"), (3, 10)),
+            consider_sys_version_info(&parse_expr("sys.version_info[0] < 3"), &options),
             TruthValue::AlwaysFalse
         );
 
         // Edge case: reversed operands with exact equality
         assert_eq!(
-            consider_sys_version_info(&parse_expr("3 == sys.version_info[0]"), (3, 10)),
+            consider_sys_version_info(&parse_expr("3 == sys.version_info[0]"), &options),
             TruthValue::AlwaysTrue
         );
 
         // Edge case: reversed > with one above boundary
         assert_eq!(
-            consider_sys_version_info(&parse_expr("11 > sys.version_info[1]"), (3, 10)),
+            consider_sys_version_info(&parse_expr("11 > sys.version_info[1]"), &options),
             TruthValue::AlwaysTrue
         );
 
         // Out of range index (only 0 and 1 supported)
         assert_eq!(
-            consider_sys_version_info(&parse_expr("sys.version_info[2] == 5"), (3, 10)),
+            consider_sys_version_info(&parse_expr("sys.version_info[2] == 5"), &options),
             TruthValue::TruthValueUnknown
         );
 
         // Not a comparison
         assert_eq!(
-            consider_sys_version_info(&parse_expr("sys.version_info[0]"), (3, 10)),
+            consider_sys_version_info(&parse_expr("sys.version_info[0]"), &options),
             TruthValue::TruthValueUnknown
         );
 
         // Chained comparison
         assert_eq!(
-            consider_sys_version_info(&parse_expr("2 < sys.version_info[0] < 4"), (3, 10)),
+            consider_sys_version_info(&parse_expr("2 < sys.version_info[0] < 4"), &options),
             TruthValue::TruthValueUnknown
         );
 
         // Tuple comparisons: sys.version_info >= (3, 8)
         assert_eq!(
-            consider_sys_version_info(&parse_expr("sys.version_info >= (3, 8)"), (3, 10)),
+            consider_sys_version_info(&parse_expr("sys.version_info >= (3, 8)"), &options),
             TruthValue::AlwaysTrue
         );
 
         // Tuple comparisons: sys.version_info >= (3, 10) - exact boundary
         assert_eq!(
-            consider_sys_version_info(&parse_expr("sys.version_info >= (3, 10)"), (3, 10)),
+            consider_sys_version_info(&parse_expr("sys.version_info >= (3, 10)"), &options),
             TruthValue::AlwaysTrue
         );
 
         // Tuple comparisons: sys.version_info < (3, 10) - exact boundary
         assert_eq!(
-            consider_sys_version_info(&parse_expr("sys.version_info < (3, 10)"), (3, 10)),
+            consider_sys_version_info(&parse_expr("sys.version_info < (3, 10)"), &options),
             TruthValue::AlwaysFalse
         );
 
         // Tuple comparisons: sys.version_info[:2] >= (3, 8)
         assert_eq!(
-            consider_sys_version_info(&parse_expr("sys.version_info[:2] >= (3, 8)"), (3, 10)),
+            consider_sys_version_info(&parse_expr("sys.version_info[:2] >= (3, 8)"), &options),
             TruthValue::AlwaysTrue
         );
 
         // Tuple comparisons: sys.version_info[0:2] >= (3, 10)
         assert_eq!(
-            consider_sys_version_info(&parse_expr("sys.version_info[0:2] >= (3, 10)"), (3, 10)),
+            consider_sys_version_info(&parse_expr("sys.version_info[0:2] >= (3, 10)"), &options),
             TruthValue::AlwaysTrue
         );
 
         // Tuple comparisons: reversed operands
         assert_eq!(
-            consider_sys_version_info(&parse_expr("(3, 8) <= sys.version_info"), (3, 10)),
+            consider_sys_version_info(&parse_expr("(3, 8) <= sys.version_info"), &options),
             TruthValue::AlwaysTrue
         );
 
         // Tuple comparisons: single element tuple with slice
         assert_eq!(
-            consider_sys_version_info(&parse_expr("sys.version_info[:1] >= (3,)"), (3, 10)),
+            consider_sys_version_info(&parse_expr("sys.version_info[:1] >= (3,)"), &options),
             TruthValue::AlwaysTrue
         );
 
         // Tuple comparisons: version longer than target (allowed for ordering)
         assert_eq!(
-            consider_sys_version_info(&parse_expr("sys.version_info >= (3,)"), (3, 10)),
+            consider_sys_version_info(&parse_expr("sys.version_info >= (3,)"), &options),
             TruthValue::AlwaysTrue
         );
     }
@@ -910,6 +906,8 @@ mod tests {
     #[test]
     fn test_consider_sys_platform() {
         use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
+        let linux_options = Options::new((3, 10), String::from("linux"), Vec::new(), Vec::new());
+        let win32_options = Options::new((3, 10), String::from("win32"), Vec::new(), Vec::new());
 
         let parse_expr = |code: &str| {
             let parsed = parse_unchecked(code, ParseOptions::from(Mode::Expression));
@@ -921,67 +919,67 @@ mod tests {
 
         // sys.platform == "linux" on linux platform
         assert_eq!(
-            consider_sys_platform(&parse_expr("sys.platform == 'linux'"), "linux"),
+            consider_sys_platform(&parse_expr("sys.platform == 'linux'"), &linux_options),
             TruthValue::AlwaysTrue
         );
 
         // sys.platform == "win32" on linux platform
         assert_eq!(
-            consider_sys_platform(&parse_expr("sys.platform == 'win32'"), "linux"),
+            consider_sys_platform(&parse_expr("sys.platform == 'win32'"), &linux_options),
             TruthValue::AlwaysFalse
         );
 
         // sys.platform != "win32" on linux platform
         assert_eq!(
-            consider_sys_platform(&parse_expr("sys.platform != 'win32'"), "linux"),
+            consider_sys_platform(&parse_expr("sys.platform != 'win32'"), &linux_options),
             TruthValue::AlwaysTrue
         );
 
         // sys.platform != "linux" on linux platform
         assert_eq!(
-            consider_sys_platform(&parse_expr("sys.platform != 'linux'"), "linux"),
+            consider_sys_platform(&parse_expr("sys.platform != 'linux'"), &linux_options),
             TruthValue::AlwaysFalse
         );
 
         // Unsupported: other comparison operators
         assert_eq!(
-            consider_sys_platform(&parse_expr("sys.platform < 'linux'"), "linux"),
+            consider_sys_platform(&parse_expr("sys.platform < 'linux'"), &linux_options),
             TruthValue::TruthValueUnknown
         );
 
         // Unsupported: not sys.platform
         assert_eq!(
-            consider_sys_platform(&parse_expr("foo.platform == 'linux'"), "linux"),
+            consider_sys_platform(&parse_expr("foo.platform == 'linux'"), &linux_options),
             TruthValue::TruthValueUnknown
         );
 
         // Unsupported: chained comparisons
         assert_eq!(
-            consider_sys_platform(&parse_expr("'a' < sys.platform < 'z'"), "linux"),
+            consider_sys_platform(&parse_expr("'a' < sys.platform < 'z'"), &linux_options),
             TruthValue::TruthValueUnknown
         );
 
         // startswith: platform starts with prefix
         assert_eq!(
-            consider_sys_platform(&parse_expr("sys.platform.startswith('lin')"), "linux"),
+            consider_sys_platform(&parse_expr("sys.platform.startswith('lin')"), &linux_options),
             TruthValue::AlwaysTrue
         );
 
         // startswith: platform doesn't start with prefix
         assert_eq!(
-            consider_sys_platform(&parse_expr("sys.platform.startswith('win')"), "linux"),
+            consider_sys_platform(&parse_expr("sys.platform.startswith('win')"), &linux_options),
             TruthValue::AlwaysFalse
         );
 
         // startswith: exact match
         assert_eq!(
-            consider_sys_platform(&parse_expr("sys.platform.startswith('linux')"), "linux"),
+            consider_sys_platform(&parse_expr("sys.platform.startswith('linux')"), &linux_options),
             TruthValue::AlwaysTrue
         );
 
         // startswith on win32 platform
         assert_eq!(
-            consider_sys_platform(&parse_expr("sys.platform.startswith('win')"), "win32"),
+            consider_sys_platform(&parse_expr("sys.platform.startswith('win')"), &win32_options),
             TruthValue::AlwaysTrue
         );
     }
