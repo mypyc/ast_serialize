@@ -117,6 +117,7 @@ const TAG_IMPORT_METADATA: u8 = 226;
 const TAG_IMPORTFROM_METADATA: u8 = 227;
 const TAG_IMPORTALL_METADATA: u8 = 228;
 const TAG_UNBOUND_TYPE: u8 = 104;
+const TAG_TUPLE_TYPE: u8 = 112;
 const TAG_UNION_TYPE: u8 = 115;
 const TAG_LIST_TYPE: u8 = 118;
 const TAG_ELLIPSIS_TYPE: u8 = 119;
@@ -2171,6 +2172,17 @@ fn serialize_type(ser: &mut Serializer, t: &ast::Expr) {
                 serialize_type(ser, item);
             }
         }
+        ast::Expr::Tuple(e) => {
+            ser.write_tag(TAG_TUPLE_TYPE);
+            // Serialize items list
+            ser.write_tag(TAG_LIST_GEN);
+            ser.write_int(e.elts.len() as i64);
+            for item in &e.elts {
+                serialize_type(ser, item);
+            }
+            // Write implicit = True (i.e. from (T, S) syntax)
+            ser.write_bool(true);
+        }
         ast::Expr::Call(c) => {
             // Handle Call in type context (e.g., Arg(int, 'x'))
             ser.write_tag(TAG_CALL_TYPE);
@@ -2300,6 +2312,8 @@ fn serialize_string_type(ser: &mut Serializer, string_value: &str, range: TextRa
                     ser.write_bytes(e.id.as_bytes());
                     ser.write_tag(TAG_LIST_GEN);
                     ser.write_int(0);
+                    // Write empty_tuple_index
+                    ser.write_bool(false);
                     // Write original_str_expr
                     ser.write_bytes(string_value.as_bytes());
                     // Write original_str_fallback
@@ -2400,6 +2414,8 @@ fn serialize_attribute_type(
     ser.write_bytes(&v);
     ser.write_tag(TAG_LIST_GEN);
     ser.write_int(0);
+    // Write empty_tuple_index
+    ser.write_bool(false);
     // Write optional original_str_expr
     if let Some(s) = original_str_expr {
         ser.write_bytes(s.as_bytes());
@@ -2436,10 +2452,13 @@ fn serialize_subscript_type(
             for item in &t.elts {
                 serialize_type(ser, item);
             }
+            // Write empty_tuple_index.
+            ser.write_bool(t.len() == 0);
         }
         _ => {
             ser.write_int(1);
             serialize_type(ser, &subscript.slice);
+            ser.write_bool(false);
         }
     }
     // Write optional original_str_expr
@@ -2462,6 +2481,8 @@ fn serialize_simple_unbound_type(ser: &mut Serializer, name: &[u8]) {
     ser.write_bytes(name);
     ser.write_tag(TAG_LIST_GEN);
     ser.write_int(0);
+    // Write empty_tuple_index
+    ser.write_bool(false);
     // Write None for original_str_expr (optional field)
     ser.write_tag(TAG_LITERAL_NONE);
     // Write None for original_str_fallback (optional field)
