@@ -1,8 +1,10 @@
-from typing import NotRequired, TypedDict
+from typing import TypedDict, type_check_only
+from typing_extensions import NotRequired, TypeAlias
 
-TypeIgnores = list[tuple[int, list[str]]]
+_TypeIgnores: TypeAlias = list[tuple[int, list[str]]]
 
-class ParseError(TypedDict):
+@type_check_only
+class _ParseError(TypedDict):
     line: int
     column: int
     message: str
@@ -16,5 +18,5 @@ def parse(
     platform: str | None = None,
     always_true: list[str] | None = None,
     always_false: list[str] | None = None,
-) -> tuple[bytes, list[ParseError], TypeIgnores, bytes, bool]:
+) -> tuple[bytes, list[_ParseError], _TypeIgnores, bytes, bool]:
     ...
