@@ -171,10 +171,14 @@ pub(crate) fn serialize_python_file(
     file_path: &Path,
     skip_function_bodies: bool,
     options: Options,
-) -> Result<(Vec<u8>, Vec<SyntaxError>, Vec<(usize, Vec<String>)>, Vec<u8>)> {
+) -> Result<(Vec<u8>, Vec<SyntaxError>, Vec<(usize, Vec<String>)>, Vec<u8>, bool)> {
     let source_type = PySourceType::from(file_path);
     let source_text = std::fs::read_to_string(file_path)?;
     let line_index = LineIndex::from_source_text(&source_text);
+    let is_stub_package = match file_path.file_name() {
+        Some(file) => file.to_str().map(|name| name == "__init__.pyi").unwrap_or_else(|| false),
+        _ => false,
+    };
 
     // Check if file is all ASCII and build per-line non-ASCII flags if needed
     let is_all_ascii = source_text.is_ascii();
@@ -221,6 +225,7 @@ pub(crate) fn serialize_python_file(
         options,
         current_unreachable: false,
         current_mypy_only: false,
+        top_level_getattr: false,
     };
     parsed.syntax().serialize(&mut ser);
 
@@ -233,7 +238,10 @@ pub(crate) fn serialize_python_file(
         Some(ser.lines_with_non_ascii),
     );
 
-    Ok((ser.bytes, syntax_errors, type_ignore_lines, import_bytes))
+    // Return this directly to caller, so that it can check this without deserialization
+    let is_partial_package = is_stub_package && ser.top_level_getattr;
+
+    Ok((ser.bytes, syntax_errors, type_ignore_lines, import_bytes, is_partial_package))
 }
 
 // Bit flags for import statement metadata
@@ -279,6 +287,7 @@ struct Serializer<'a> {
     options: Options,           // Reachability analysis options
     current_unreachable: bool,  // Whether we're currently in an unreachable block
     current_mypy_only: bool,    // Whether we're currently in a mypy-only block (e.g., if TYPE_CHECKING)
+    top_level_getattr: bool,    // Does module have top-level __getattr__() function
 }
 
 impl<'a> Serializer<'a> {
@@ -862,6 +871,10 @@ impl Ser for ast::Stmt {
                     )
                 } else {
                     true
+                };
+
+                if !ser.in_class && !ser.in_function && f.name.as_str() == "__getattr__" {
+                    ser.top_level_getattr = true;
                 };
 
                 // Body - mark that we're inside a function
@@ -2580,6 +2593,7 @@ pub fn serialize_imports(
         options: Options::default(),
         current_unreachable: false,
         current_mypy_only: false,
+        top_level_getattr: false,
     };
 
     // Write list of imports
@@ -2708,6 +2722,7 @@ mod tests {
             options: Options::default(),
             current_unreachable: false,
             current_mypy_only: false,
+            top_level_getattr: false,
         }
     }
 

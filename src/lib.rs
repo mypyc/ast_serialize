@@ -47,7 +47,7 @@ fn parse(
     platform: Option<String>,
     always_true: Option<Vec<String>>,
     always_false: Option<Vec<String>>,
-) -> PyResult<(Vec<u8>, Vec<PyObject>, Vec<PyObject>, Vec<u8>)> {
+) -> PyResult<(Vec<u8>, Vec<PyObject>, Vec<PyObject>, Vec<u8>, bool)> {
     // Get defaults from Python if not provided
     let python_version = match python_version {
         Some(v) => v,
@@ -63,7 +63,7 @@ fn parse(
     let always_false = always_false.unwrap_or_default();
 
     let path = Path::new(&fnam);
-    let (ast_bytes, syntax_errors, type_ignore_lines, import_bytes) = py
+    let (ast_bytes, syntax_errors, type_ignore_lines, import_bytes, is_partial_package) = py
         .allow_threads(|| {
             serialize_ast::serialize_python_file(
                 path,
@@ -102,7 +102,7 @@ fn parse(
         .collect();
     let py_type_ignores = py_type_ignores?;
 
-    Ok((ast_bytes, py_errors, py_type_ignores, import_bytes))
+    Ok((ast_bytes, py_errors, py_type_ignores, import_bytes, is_partial_package))
 }
 
 /// Get the default Python version from sys.version_info
