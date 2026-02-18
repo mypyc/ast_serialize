@@ -176,7 +176,7 @@ pub(crate) fn serialize_python_file(
     let source_text = std::fs::read_to_string(file_path)?;
     let line_index = LineIndex::from_source_text(&source_text);
     let is_stub_package = match file_path.file_name() {
-        Some(file) => file.to_str().map(|name| name == "__init__.pyi").unwrap_or_else(|| false),
+        Some(file) => file.as_encoded_bytes() == b"__init__.pyi",
         _ => false,
     };
 
