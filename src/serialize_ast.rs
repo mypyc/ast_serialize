@@ -969,9 +969,10 @@ impl Ser for ast::Stmt {
                 // Clone the type expression to avoid borrow checker issues
                 let type_expr = ser.type_comments.get(&line_number).cloned();
 
-                if let Some(type_expr) = type_expr {
+                if let Some(mut type_expr) = type_expr {
                     // Has type annotation from type comment
                     ser.write_bool(true);
+                    ast::relocate::relocate_expr(&mut type_expr, a.range());
                     serialize_type(ser, &type_expr);
                 } else {
                     // No type annotation
