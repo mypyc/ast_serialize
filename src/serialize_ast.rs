@@ -118,6 +118,7 @@ const TAG_IMPORTFROM_METADATA: u8 = 227;
 const TAG_IMPORTALL_METADATA: u8 = 228;
 const TAG_UNBOUND_TYPE: u8 = 104;
 const TAG_TUPLE_TYPE: u8 = 112;
+const TAG_TYPED_DICT_TYPE: u8 = 113;
 const TAG_UNION_TYPE: u8 = 115;
 const TAG_LIST_TYPE: u8 = 118;
 const TAG_ELLIPSIS_TYPE: u8 = 119;
@@ -2122,6 +2123,14 @@ fn serialize_invalid_type(ser: &mut Serializer) {
     ser.write_tag(TAG_LITERAL_NONE);
 }
 
+fn is_string_or_none(e: &Option<ast::Expr>) -> bool {
+    match e {
+        Some(ast::Expr::StringLiteral(_)) => true,
+        None => true,
+        _ => false,
+    }
+}
+
 /// Main entry point for serializing type annotations.
 /// Handles all Python type expressions including names, attributes, subscripts,
 /// unions, literals, and forward references (string literals).
@@ -2192,6 +2201,36 @@ fn serialize_type(ser: &mut Serializer, t: &ast::Expr) {
             }
             // Write implicit = True (i.e. from (T, S) syntax)
             ser.write_bool(true);
+        }
+        ast::Expr::Dict(e) => {
+            if !e.items.is_empty() && e.items.iter().all(|it| is_string_or_none(&it.key)) {
+                ser.write_tag(TAG_TYPED_DICT_TYPE);
+                // Serialize keys
+                ser.write_tag(TAG_LIST_GEN);
+                ser.write_int(e.items.len() as i64);
+                for item in &e.items {
+                    if let Some(ast::Expr::StringLiteral(s)) = &item.key {
+                        let value = &s.value;
+                        ser.write_tag(TAG_LITERAL_STR);
+                        ser.write_usize(value.len());
+                        for part in value.iter() {
+                            ser.bytes.extend_from_slice(part.as_bytes());
+                        }
+                    } else {
+                        // Dict unpacking: {**other_dict}
+                        ser.write_tag(TAG_LITERAL_NONE);
+                    }
+                }
+                // Serialize values
+                ser.write_tag(TAG_LIST_GEN);
+                ser.write_int(e.items.len() as i64);
+                for item in &e.items {
+                    serialize_type(ser, &item.value);
+                }
+            }
+            else {
+                serialize_invalid_type(ser);
+            }
         }
         ast::Expr::Call(c) => {
             // Handle Call in type context (e.g., Arg(int, 'x'))
