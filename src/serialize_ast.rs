@@ -227,6 +227,7 @@ pub(crate) fn serialize_python_file(
         current_unreachable: false,
         current_mypy_only: false,
         top_level_getattr: false,
+        is_evaluated: true,
     };
     parsed.syntax().serialize(&mut ser);
 
@@ -289,6 +290,7 @@ struct Serializer<'a> {
     current_unreachable: bool,  // Whether we're currently in an unreachable block
     current_mypy_only: bool,    // Whether we're currently in a mypy-only block (e.g., if TYPE_CHECKING)
     top_level_getattr: bool,    // Does module have top-level __getattr__() function
+    is_evaluated: bool,         // Current type is evaluated at runtime (or is it a type comment/string)
 }
 
 impl<'a> Serializer<'a> {
@@ -974,7 +976,10 @@ impl Ser for ast::Stmt {
                     // Has type annotation from type comment
                     ser.write_bool(true);
                     ast::relocate::relocate_expr(&mut type_expr, a.range());
+                    let was_evaluated = ser.is_evaluated;
+                    ser.is_evaluated = false;
                     serialize_type(ser, &type_expr);
+                    ser.is_evaluated = was_evaluated;
                 } else {
                     // No type annotation
                     ser.write_bool(false);
@@ -2317,7 +2322,10 @@ fn serialize_type(ser: &mut Serializer, t: &ast::Expr) {
             }
 
             // Try to parse the string as a type expression
+            let was_evaluated = ser.is_evaluated;
+            ser.is_evaluated = false;
             serialize_string_type(ser, &string_value, s.range());
+            ser.is_evaluated = was_evaluated;
             return; // serialize_string_type handles location and end tag
         }
         ast::Expr::BytesLiteral(bytes_lit) => {
@@ -2352,11 +2360,11 @@ fn serialize_string_type(ser: &mut Serializer, string_value: &str, range: TextRa
     if parse_result.errors().is_empty() {
         // Extract the expression from the parsed module
         if let ast::Mod::Expression(expr_mod) = parse_result.into_syntax() {
-            let expr = expr_mod.body;
+            let mut expr = expr_mod.body;
 
             // Check if this is a type expression that should have original_str_expr set
             // (UnboundType or UnionType in mypy terms, which are Name/Attribute/Subscript or BinOp with | in AST)
-            match expr.as_ref() {
+            match expr.as_mut() {
                 ast::Expr::Name(e) => {
                     ser.write_tag(TAG_UNBOUND_TYPE);
                     ser.write_bytes(e.id.as_bytes());
@@ -2384,12 +2392,17 @@ fn serialize_string_type(ser: &mut Serializer, string_value: &str, range: TextRa
                     return;
                 }
                 ast::Expr::Subscript(e) => {
-                    serialize_subscript_type(ser, e, Some(string_value), Some("builtins.str"));
+                    // Move nested types to correct location
+                    ast::relocate::relocate_expr(&mut e.slice, range);
+                    serialize_subscript_type(ser, &e, Some(string_value), Some("builtins.str"));
                     ser.write_location(range);
                     ser.write_end_tag();
                     return;
                 }
                 ast::Expr::BinOp(binop) if matches!(binop.op, ast::Operator::BitOr) => {
+                    // Move nested types to correct location
+                    ast::relocate::relocate_expr(&mut binop.left, range);
+                    ast::relocate::relocate_expr(&mut binop.right, range);
                     // Serialize as UnionType with original_str_expr and original_str_fallback
                     serialize_union_type(
                         ser,
@@ -2443,6 +2456,7 @@ fn serialize_union_type(
     } else {
         ser.write_tag(TAG_LITERAL_NONE);
     }
+    ser.write_bool(ser.is_evaluated);
     ser.write_location(range);
     ser.write_end_tag();
 }
@@ -2634,6 +2648,7 @@ pub fn serialize_imports(
         current_unreachable: false,
         current_mypy_only: false,
         top_level_getattr: false,
+        is_evaluated: true,
     };
 
     // Write list of imports
@@ -2763,6 +2778,7 @@ mod tests {
             current_unreachable: false,
             current_mypy_only: false,
             top_level_getattr: false,
+            is_evaluated: true,
         }
     }
 
