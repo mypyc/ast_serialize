@@ -100,7 +100,7 @@ const TAG_DEL_STMT: u8 = 204;
 const TAG_FSTRING_EXPR: u8 = 205;
 const TAG_FSTRING_INTERPOLATION: u8 = 206;
 const TAG_LAMBDA_EXPR: u8 = 207;
-const TAG_NAMED_EXPR: u8 = 208;
+const TAG_ASSIGNMENT_EXPR: u8 = 208;
 const TAG_STAR_EXPR: u8 = 209;
 const TAG_BYTES_EXPR: u8 = 210;
 const TAG_GLOBAL_DECL: u8 = 211;
@@ -2316,7 +2316,7 @@ impl Ser for ast::Expr {
                 ser.write_location(lambda.range());
             }
             ast::Expr::Named(named) => {
-                ser.write_tag(TAG_NAMED_EXPR);
+                ser.write_tag(TAG_ASSIGNMENT_EXPR);
                 // Serialize target expression
                 named.target.serialize(ser);
                 // Serialize value expression
