@@ -437,6 +437,25 @@ pub(crate) fn infer_condition_value(expr: &ast::Expr, options: &Options) -> Trut
             positive.invert()
         }
 
+        // Handle boolean literals (True/False)
+        // Only treat as always true/false if explicitly listed in --always-true/--always-false,
+        // since ruff parses True/False as BooleanLiteral rather than Name.
+        ast::Expr::BooleanLiteral(lit) => {
+            if lit.value {
+                if options.always_true().iter().any(|s| s == "True") {
+                    TruthValue::AlwaysTrue
+                } else {
+                    TruthValue::TruthValueUnknown
+                }
+            } else {
+                if options.always_false().iter().any(|s| s == "False") {
+                    TruthValue::AlwaysFalse
+                } else {
+                    TruthValue::TruthValueUnknown
+                }
+            }
+        }
+
         // Handle name expressions (e.g., PY3, MYPY, TYPE_CHECKING)
         ast::Expr::Name(name) => check_name_truth_value(name.id.as_str(), options),
 
@@ -574,6 +593,34 @@ mod tests {
         assert_eq!(
             parse_and_infer("foo.DEBUG", &[String::from("DEBUG")], &[]),
             TruthValue::AlwaysTrue
+        );
+    }
+
+    #[test]
+    fn test_true_false_boolean_literals_with_options() {
+        use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
+
+        let parse_and_infer = |code: &str, always_true: &[String], always_false: &[String]| {
+            let parsed = parse_unchecked(code, ParseOptions::from(Mode::Expression));
+            let ast::Mod::Expression(expr_mod) = parsed.into_syntax() else {
+                panic!("Expected expression");
+            };
+            let options = Options::new(
+                (3, 10),
+                String::from("linux"),
+                always_true.to_vec(),
+                always_false.to_vec(),
+            );
+            infer_condition_value(&expr_mod.body, &options)
+        };
+
+        assert_eq!(
+            parse_and_infer("True", &[String::from("True")], &[]),
+            TruthValue::AlwaysTrue
+        );
+        assert_eq!(
+            parse_and_infer("False", &[], &[String::from("False")]),
+            TruthValue::AlwaysFalse
         );
     }
 
