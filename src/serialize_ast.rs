@@ -4,8 +4,9 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::Result;
-use ruff_python_ast::{self as ast};
+use ruff_python_ast::{self as ast, StmtFunctionDef};
 use ruff_python_ast::{Number, PySourceType};
+use ruff_python_ast::str::TripleQuotes::No;
 use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
 use ruff_source_file::LineIndex;
 use ruff_text_size::{Ranged, TextRange};
@@ -14,6 +15,7 @@ use crate::func_effect_visitor;
 use crate::options::Options;
 use crate::reachability::TruthValue;
 use crate::type_comment;
+use crate::type_comment::parse_func_type_comment;
 
 /// Syntax error information with location details
 #[derive(Debug, Clone)]
@@ -275,6 +277,13 @@ enum ImportStatement {
     },
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum ParsedTypeComment {
+    Regular(ast::Expr),
+    Function(Vec<ast::Expr>, ast::Expr),
+    Invalid(String),
+}
+
 struct Serializer<'a> {
     bytes: Vec<u8>,
     imports: Vec<ImportStatement>, // Encountered import statements
@@ -285,7 +294,7 @@ struct Serializer<'a> {
     in_function: bool,          // Whether we're currently inside a function definition
     is_all_ascii: bool,         // Whether the entire file contains only ASCII characters
     lines_with_non_ascii: Vec<bool>, // Per-line flags: true if line has non-ASCII (empty if is_all_ascii)
-    type_comments: HashMap<usize, ast::Expr>, // Type comments by line number (1-indexed)
+    type_comments: HashMap<usize, ParsedTypeComment>, // Type comments by line number (1-indexed)
     options: Options,           // Reachability analysis options
     current_unreachable: bool,  // Whether we're currently in an unreachable block
     current_mypy_only: bool,    // Whether we're currently in a mypy-only block (e.g., if TYPE_CHECKING)
@@ -534,7 +543,7 @@ fn extract_type_comments_and_ignores(
     tokens: &ruff_python_parser::Tokens,
     source: &str,
     line_index: &LineIndex,
-) -> (Vec<(usize, Vec<String>)>, HashMap<usize, ast::Expr>) {
+) -> (Vec<(usize, Vec<String>)>, HashMap<usize, ParsedTypeComment>) {
     let mut type_ignore_lines = Vec::new();
     let mut type_comments = HashMap::new();
 
@@ -557,7 +566,19 @@ fn extract_type_comments_and_ignores(
 
                             if parse_result.errors().is_empty() {
                                 if let ast::Mod::Expression(expr_mod) = parse_result.into_syntax() {
-                                    type_comments.insert(line_number, *expr_mod.body);
+                                    type_comments.insert(
+                                        line_number, ParsedTypeComment::Regular(*expr_mod.body)
+                                    );
+                                }
+                            } else {
+                                let as_function_comment = parse_func_type_comment(annotation.as_str());
+                                if let Some((arg_types, ret_type)) = as_function_comment {
+                                    let parsed_function_comment = function_comment_to_expr(arg_types, ret_type);
+                                    if let Some((parsed_arg_types, parsed_ret_type)) = parsed_function_comment {
+                                        type_comments.insert(
+                                            line_number, ParsedTypeComment::Function(parsed_arg_types, parsed_ret_type)
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -568,6 +589,34 @@ fn extract_type_comments_and_ignores(
     }
 
     (type_ignore_lines, type_comments)
+}
+
+fn function_comment_to_expr(
+    arg_types: Vec<String>,
+    ret_type: String,
+) -> Option<(Vec<ast::Expr>, ast::Expr)> {
+    let mut parsed_arg_types = Vec::new();
+    for arg_type in arg_types {
+        let wrapped = format!("({})", arg_type);
+        let parse_result =
+            parse_unchecked(&wrapped, ParseOptions::from(Mode::Expression));
+        if parse_result.errors().is_empty() {
+            if let ast::Mod::Expression(expr_mod) = parse_result.into_syntax() {
+                parsed_arg_types.push(*expr_mod.body);
+            }
+        } else {
+            return None;
+        }
+    }
+    let wrapped = format!("({})", ret_type);
+    let parse_result =
+        parse_unchecked(&wrapped, ParseOptions::from(Mode::Expression));
+    if parse_result.errors().is_empty() {
+        if let ast::Mod::Expression(expr_mod) = parse_result.into_syntax() {
+            return Some((parsed_arg_types, *expr_mod.body));
+        }
+    }
+    None
 }
 
 /// Helper function to serialize bytes literal to escaped string representation
@@ -834,6 +883,13 @@ fn serialize_type_params(ser: &mut Serializer, type_params: &ast::TypeParams) {
     }
 }
 
+fn find_func_type_comment(
+    ser: &mut Serializer,
+    func: StmtFunctionDef,
+) -> Option<(Vec<Option<ast::Expr>>, Option<ast::Expr>)> {
+    None
+}
+
 impl Ser for ast::Stmt {
     fn serialize(&self, ser: &mut Serializer) {
         match self {
@@ -972,7 +1028,7 @@ impl Ser for ast::Stmt {
                 // Clone the type expression to avoid borrow checker issues
                 let type_expr = ser.type_comments.get(&line_number).cloned();
 
-                if let Some(mut type_expr) = type_expr {
+                if let Some(ParsedTypeComment::Regular(mut type_expr)) = type_expr {
                     // Has type annotation from type comment
                     ser.write_bool(true);
                     ast::relocate::relocate_expr(&mut type_expr, a.range());
