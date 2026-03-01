@@ -6,7 +6,7 @@ __all__ = ["parse"]
 _TypeIgnores: TypeAlias = list[tuple[int, list[str]]]
 
 @type_check_only
-class _ParseError(TypedDict):
+class ParseError(TypedDict):
     line: int
     column: int
     message: str
@@ -27,5 +27,5 @@ def parse(
     platform: str | None = None,
     always_true: list[str] | None = None,
     always_false: list[str] | None = None,
-) -> tuple[bytes, list[_ParseError], _TypeIgnores, bytes, _ASTData]:
+) -> tuple[bytes, list[ParseError], _TypeIgnores, bytes, _ASTData]:
     ...
