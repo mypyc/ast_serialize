@@ -2,15 +2,12 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::process::id;
 use anyhow::Result;
 use ruff_python_ast::{self as ast, AnyParameterRef, StmtFunctionDef};
 use ruff_python_ast::{Number, PySourceType};
-use ruff_python_ast::str::TripleQuotes::No;
 use ruff_python_parser::{Mode, ParseOptions, parse_unchecked, TokenKind};
 use ruff_source_file::LineIndex;
 use ruff_text_size::{Ranged, TextRange};
-
 use crate::func_effect_visitor;
 use crate::options::Options;
 use crate::reachability::TruthValue;
@@ -19,10 +16,11 @@ use crate::type_comment::parse_func_type_comment;
 
 /// Syntax error information with location details
 #[derive(Debug, Clone)]
-pub struct SyntaxError {
+pub(crate) struct SyntaxError {
     pub line: usize,
     pub column: usize,
     pub message: String,
+    pub blocker: bool,
 }
 
 // Fixed tags for primitive types (must match mypy/cache.py)
@@ -205,6 +203,7 @@ pub(crate) fn serialize_python_file(
                 line: location.line.get(),
                 column: location.column.get(),
                 message: error.error.to_string(),
+                blocker: true,
             }
         })
         .collect();
@@ -475,15 +474,17 @@ impl<'a> Serializer<'a> {
         self.write_end_tag();
     }
 
-    fn add_error(&mut self, error: String, range: TextRange) {
+    fn add_error(&mut self, error: String, range: TextRange, blocker: bool) {
         let st_loc = self.line_index.line_column(range.start(), self.text);
         let st_line = st_loc.line.get();
         let st_column_bytes = st_loc.column.get();
+        let st_column = self.convert_column_to_codepoint(st_loc.line.get(), st_column_bytes);
         self.extra_errors.push(
             SyntaxError {
                 line: st_line,
-                column: st_column_bytes,
+                column: st_column - 1,  // convert to 0-based
                 message: error,
+                blocker,
             }
         );
     }
@@ -595,14 +596,14 @@ fn extract_type_comments_and_ignores(
                                         type_comments.insert(
                                             line_number, ParsedTypeComment::Function(parsed_arg_types, parsed_ret_type)
                                         );
+                                        continue;
                                     }
-                                } else {
-                                    type_comments.insert(
-                                        line_number, ParsedTypeComment::Invalid(
-                                            format!("Syntax error in type comment \"{annotation}\"").to_string()
-                                        )
-                                    );
                                 }
+                                type_comments.insert(
+                                    line_number, ParsedTypeComment::Invalid(
+                                        format!("Syntax error in type comment \"{annotation}\"").to_string()
+                                    )
+                                );
                             }
                         }
                     }
@@ -805,16 +806,23 @@ fn serialize_argument(
     };
     ser.write_tagged_int(kind);
 
+    if param.annotation.is_some() && arg_comment.is_some() {
+        ser.add_error(
+            "Function has duplicate type signatures".to_string(),
+            param.range(),
+            false,
+        );
+    }
     if let Some(ann) = &param.annotation {
         ser.write_bool(true);
         serialize_type(ser, ann);
-    } else if arg_comment.is_some(){
+    } else if arg_comment.is_some() {
         ser.write_bool(true);
-        let mut ret_comment = arg_comment.unwrap();
-        ast::relocate::relocate_expr(&mut ret_comment, param.range());
+        let mut arg_comment = arg_comment.unwrap();
+        ast::relocate::relocate_expr(&mut arg_comment, param.range());
         let was_evaluated = ser.is_evaluated;
         ser.is_evaluated = false;
-        serialize_type(ser, &ret_comment);
+        serialize_type(ser, &arg_comment);
         ser.is_evaluated = was_evaluated;
     } else {
         ser.write_bool(false);
@@ -945,47 +953,79 @@ fn find_func_type_comment(
     let first_stmt = func.body[0].start();
     let tokens = ser.tokens.unwrap();
     let tokens_before = tokens.before(first_stmt);
-    // TODO: check every comment line between first statement and colon.
     let mut idx = tokens_before.len() - 1;
-    let mut first_comment = None;
     loop {
         let token = tokens_before[idx].kind();
-        if token == TokenKind::Indent || token == TokenKind::Newline {
-            idx -= 1;
-            continue;
-        }
-        if token == TokenKind::Comment {
-            first_comment = Some(tokens_before[idx]);
-            idx -= 1;
-        } else {
+        if token == TokenKind::Colon {
             break;
         }
-    }
-    if let Some(first_comment) = first_comment {
-        let location = ser.line_index.line_column(first_comment.start(), ser.text);
-        let line_number = location.line.get();
-        if let Some(ParsedTypeComment::Function(args, ret)) = ser.type_comments.get(&line_number) {
-            ret_type = Some(ret.clone());
-            if args.len() == func.parameters.len() {
-                for idx in 0..args.len() {
-                    arg_types[idx] = Some(args[idx].clone());
+        if token == TokenKind::Comment {
+            let location = ser.line_index.line_column(tokens_before[idx].start(), ser.text);
+            let line_number = location.line.get();
+            if let Some(ParsedTypeComment::Function(args, ret)) = ser.type_comments.get(&line_number) {
+                ret_type = Some(ret.clone());
+                if args.len() == 1 {
+                    if let Some(ast::Expr::EllipsisLiteral(_)) = args.get(0) {
+                        // Special case, single ellipsis like: def (...) -> None.
+                        break;
+                    }
                 }
+                if args.len() == func.parameters.len() {
+                    for idx in 0..args.len() {
+                        arg_types[idx] = Some(args[idx].clone());
+                    }
+                } else if ser.in_class && args.len() == func.parameters.len() - 1 {
+                    // Skip the self or cls argument in methods.
+                    for idx in 1..func.parameters.len() {
+                        arg_types[idx] = Some(args[idx - 1].clone());
+                    }
+                } else {
+                    let err =
+                    if args.len() > func.parameters.len() {
+                        "Type signature has too many parameters"
+                    } else {
+                        "Type signature has too few parameters"
+                    };
+                    ser.add_error(err.to_string(), func.range(), false);
+                }
+                break;
+            }
+            if let Some(ParsedTypeComment::Invalid(error)) = ser.type_comments.get(&line_number) {
+                ser.add_error(error.to_string(), func.range(), false);
+                break;
             }
         }
+        idx -= 1;
     }
     for (idx, param) in func.parameters.iter().enumerate() {
         if let AnyParameterRef::Variadic(param) = param {
             let location = ser.line_index.line_column(param.start(), ser.text);
             let line = location.line.get();
             if let Some(ParsedTypeComment::Regular(arg_type)) = ser.type_comments.get(&line) {
-                arg_types[idx] = Some(arg_type.clone());
+                if arg_types[idx].is_some() {
+                    ser.add_error(
+                        "Function has duplicate type signatures".to_string(),
+                        func.range(),
+                        false,
+                    );
+                } else {
+                    arg_types[idx] = Some(arg_type.clone());
+                }
             }
         }
         if let AnyParameterRef::NonVariadic(param) = param {
             let location = ser.line_index.line_column(param.start(), ser.text);
             let line = location.line.get();
             if let Some(ParsedTypeComment::Regular(arg_type)) = ser.type_comments.get(&line) {
-                arg_types[idx] = Some(arg_type.clone());
+                if arg_types[idx].is_some() {
+                    ser.add_error(
+                        "Function has duplicate type signatures".to_string(),
+                        func.range(),
+                        false,
+                    );
+                } else {
+                    arg_types[idx] = Some(arg_type.clone());
+                }
             }
         }
     }
@@ -1075,6 +1115,13 @@ impl Ser for ast::Stmt {
                 }
 
                 // Return type annotation
+                if f.returns.is_some() && ret_comment.is_some() {
+                    ser.add_error(
+                        "Function has duplicate type signatures".to_string(),
+                        f.range(),
+                        false,
+                    );
+                }
                 if let Some(ret) = &f.returns {
                     ser.write_bool(true); // No return annotation
                     serialize_type(ser, ret);
@@ -1148,7 +1195,7 @@ impl Ser for ast::Stmt {
                     serialize_type(ser, &type_expr);
                     ser.is_evaluated = was_evaluated;
                 } else if let Some(ParsedTypeComment::Invalid(error)) = type_expr{
-                    ser.add_error(error, a.range());
+                    ser.add_error(error, a.range(), false);
                     ser.write_bool(true);
                     serialize_invalid_type(ser);
                     ser.write_location(a.range());
