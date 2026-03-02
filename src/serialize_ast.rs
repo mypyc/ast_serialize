@@ -196,7 +196,7 @@ pub(crate) fn serialize_python_file(
     let parsed = parse_unchecked(&source_text, ParseOptions::from(source_type));
 
     // Extract syntax errors with location information
-    let syntax_errors: Vec<SyntaxError> = parsed
+    let mut syntax_errors: Vec<SyntaxError> = parsed
         .errors()
         .iter()
         .map(|error| {
@@ -231,6 +231,7 @@ pub(crate) fn serialize_python_file(
         current_mypy_only: false,
         top_level_getattr: false,
         is_evaluated: true,
+        extra_errors: Vec::new(),
     };
     parsed.syntax().serialize(&mut ser);
 
@@ -246,6 +247,7 @@ pub(crate) fn serialize_python_file(
     // Return this directly to caller, so that it can check this without deserialization
     let is_partial_package = is_stub_package && ser.top_level_getattr;
 
+    syntax_errors.extend(ser.extra_errors);
     Ok((ser.bytes, syntax_errors, type_ignore_lines, import_bytes, is_partial_package))
 }
 
@@ -279,7 +281,7 @@ enum ImportStatement {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum ParsedTypeComment {
+pub(crate) enum ParsedTypeComment {
     Regular(ast::Expr),
     Function(Vec<ast::Expr>, ast::Expr),
     Invalid(String),
@@ -302,6 +304,7 @@ struct Serializer<'a> {
     current_mypy_only: bool,    // Whether we're currently in a mypy-only block (e.g., if TYPE_CHECKING)
     top_level_getattr: bool,    // Does module have top-level __getattr__() function
     is_evaluated: bool,         // Current type is evaluated at runtime (or is it a type comment/string)
+    extra_errors: Vec<SyntaxError>,  // Additional errors found while processing parsed tree
 }
 
 impl<'a> Serializer<'a> {
@@ -472,6 +475,18 @@ impl<'a> Serializer<'a> {
         self.write_end_tag();
     }
 
+    fn add_error(&mut self, error: String, range: TextRange) {
+        let st_loc = self.line_index.line_column(range.start(), self.text);
+        let st_line = st_loc.line.get();
+        let st_column_bytes = st_loc.column.get();
+        self.extra_errors.push(
+            SyntaxError {
+                line: st_line,
+                column: st_column_bytes,
+                message: error,
+            }
+        );
+    }
 }
 
 trait Ser {
@@ -581,6 +596,12 @@ fn extract_type_comments_and_ignores(
                                             line_number, ParsedTypeComment::Function(parsed_arg_types, parsed_ret_type)
                                         );
                                     }
+                                } else {
+                                    type_comments.insert(
+                                        line_number, ParsedTypeComment::Invalid(
+                                            format!("Syntax error in type comment \"{annotation}\"").to_string()
+                                        )
+                                    );
                                 }
                             }
                         }
@@ -1126,6 +1147,12 @@ impl Ser for ast::Stmt {
                     ser.is_evaluated = false;
                     serialize_type(ser, &type_expr);
                     ser.is_evaluated = was_evaluated;
+                } else if let Some(ParsedTypeComment::Invalid(error)) = type_expr{
+                    ser.add_error(error, a.range());
+                    ser.write_bool(true);
+                    serialize_invalid_type(ser);
+                    ser.write_location(a.range());
+                    ser.write_end_tag();
                 } else {
                     // No type annotation
                     ser.write_bool(false);
@@ -2800,6 +2827,7 @@ pub fn serialize_imports(
         current_mypy_only: false,
         top_level_getattr: false,
         is_evaluated: true,
+        extra_errors: Vec::new(),
     };
 
     // Write list of imports
@@ -2931,6 +2959,7 @@ mod tests {
             current_mypy_only: false,
             top_level_getattr: false,
             is_evaluated: true,
+            extra_errors: Vec::new(),
         }
     }
 
