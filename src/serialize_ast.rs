@@ -6,7 +6,7 @@ use std::path::Path;
 use anyhow::Result;
 use ruff_python_ast::{self as ast, AnyParameterRef, StmtFunctionDef};
 use ruff_python_ast::{Number, PySourceType};
-use ruff_python_parser::{Mode, ParseOptions, parse_unchecked, TokenKind};
+use ruff_python_parser::{Mode, ParseOptions, parse_unchecked, TokenKind, Tokens};
 use ruff_source_file::LineIndex;
 use ruff_text_size::{Ranged, TextRange};
 
@@ -283,16 +283,16 @@ enum ImportStatement {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ParsedTypeComment {
-    Regular(ast::Expr),
-    Function(Vec<ast::Expr>, ast::Expr),
-    Invalid(String),
+    Regular(ast::Expr),  // Comment like `# type: int`
+    Function(Vec<ast::Expr>, ast::Expr),  // Comment like `# type: (int, str) -> None`
+    Invalid(String),  // Error message for invalid type comment
 }
 
 struct Serializer<'a> {
     bytes: Vec<u8>,
     imports: Vec<ImportStatement>, // Encountered import statements
     line_index: LineIndex,
-    tokens: Option<&'a ruff_python_parser::Tokens>,  // All tokens (not set when serializing imports, and in tests)
+    tokens: Option<&'a Tokens>,  // All tokens (not set when serializing imports, and in tests)
     text: &'a str,
     skip_function_bodies: bool, // Whether to omit function bodies without visible effects
     in_class: bool,             // Whether we're currently inside a class definition
@@ -736,7 +736,7 @@ fn serialize_parameters(
         serialize_argument(
             ser,
             &param.parameter,
-            arg_comments[idx].clone(),
+            &arg_comments[idx],
             param.default.as_deref(),
             ARG_POS,
             ARG_OPT,
@@ -751,7 +751,7 @@ fn serialize_parameters(
         serialize_argument(
             ser,
             &param.parameter,
-            arg_comments[idx].clone(),
+            &arg_comments[idx],
             param.default.as_deref(),
             ARG_POS,
             ARG_OPT,
@@ -763,7 +763,7 @@ fn serialize_parameters(
     // Serialize *args
     if let Some(vararg) = &params.vararg {
         serialize_argument(
-            ser, vararg, arg_comments[idx].clone(), None, ARG_STAR, ARG_STAR, false
+            ser, vararg, &arg_comments[idx], None, ARG_STAR, ARG_STAR, false
         );
         idx += 1;
     }
@@ -773,7 +773,7 @@ fn serialize_parameters(
         serialize_argument(
             ser,
             &param.parameter,
-            arg_comments[idx].clone(),
+            &arg_comments[idx],
             param.default.as_deref(),
             ARG_NAMED,
             ARG_NAMED_OPT,
@@ -785,7 +785,7 @@ fn serialize_parameters(
     // Serialize **kwargs
     if let Some(kwarg) = &params.kwarg {
         serialize_argument(
-            ser, kwarg, arg_comments[idx].clone(), None, ARG_STAR2, ARG_STAR2, false
+            ser, kwarg, &arg_comments[idx], None, ARG_STAR2, ARG_STAR2, false
         );
     }
 }
@@ -793,7 +793,7 @@ fn serialize_parameters(
 fn serialize_argument(
     ser: &mut Serializer,
     param: &ast::Parameter,
-    arg_comment: Option<ast::Expr>,
+    arg_comment: &Option<ast::Expr>,
     default_expr: Option<&ast::Expr>,
     kind_no_default: i64,
     kind_with_default: i64,
@@ -822,7 +822,7 @@ fn serialize_argument(
         serialize_type(ser, ann);
     } else if arg_comment.is_some() {
         ser.write_bool(true);
-        let mut arg_comment = arg_comment.unwrap();
+        let mut arg_comment = arg_comment.clone().unwrap();
         ast::relocate::relocate_expr(&mut arg_comment, param.range());
         let was_evaluated = ser.is_evaluated;
         ser.is_evaluated = false;
@@ -3134,7 +3134,7 @@ mod tests {
         let text = "# Comment with 中文\ndef привет():\n    x = \"🎉\"\n";
         let opt = ParseOptions::from(PySourceType::Python);
         let parsed = parse_unchecked(text, opt);
-        let ast = parsed.clone().into_syntax();
+        let ast = parsed.syntax();
         let mut ser = make_ser(text);
         ser.tokens = Some(parsed.tokens());
 
@@ -3181,7 +3181,7 @@ mod tests {
         let text = "# Comment with 中文\r\ndef привет():\r\n    x = \"🎉\"\r\n";
         let opt = ParseOptions::from(PySourceType::Python);
         let parsed = parse_unchecked(text, opt);
-        let ast = parsed.clone().into_syntax();
+        let ast = parsed.syntax();
         let mut ser = make_ser(text);
         ser.tokens = Some(parsed.tokens());
 
