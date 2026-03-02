@@ -177,7 +177,7 @@ pub fn parse_func_type_comment(comment: &str) -> Option<(Vec<String>, String)> {
 
     let mut arg_types = Vec::new();
 
-    // Function type comment must start with "(".
+    // Function type comment must start with `(`.
     let mut token = tokens.next();
     if token?.kind() != TokenKind::Lpar {
         return None;
@@ -190,7 +190,7 @@ pub fn parse_func_type_comment(comment: &str) -> Option<(Vec<String>, String)> {
     let mut star_stripped = false;
     loop {
         token = tokens.next();
-        // If we reach the end before seeing closing ")", it is invalid type.
+        // If we reach the end before seeing closing `)`, it is invalid type.
         if token.is_none() {
             return None;
         }
@@ -228,11 +228,11 @@ pub fn parse_func_type_comment(comment: &str) -> Option<(Vec<String>, String)> {
         }
     }
     token = tokens.next();
-    // Token immediately following closing ")" must be "->".
+    // Token immediately following closing `)` must be `->`.
     if token?.kind() != TokenKind::Rarrow {
         return None;
     }
-    // Put the rest in the return type (maybe syntactically invalid).
+    // Put the rest in the return type (may be syntactically invalid).
     let ret_type = &comment[tokens.next()?.start().to_usize()..];
     Some((arg_types, ret_type.to_string()))
 }

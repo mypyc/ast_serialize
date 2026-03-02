@@ -2,12 +2,14 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+
 use anyhow::Result;
 use ruff_python_ast::{self as ast, AnyParameterRef, StmtFunctionDef};
 use ruff_python_ast::{Number, PySourceType};
 use ruff_python_parser::{Mode, ParseOptions, parse_unchecked, TokenKind};
 use ruff_source_file::LineIndex;
 use ruff_text_size::{Ranged, TextRange};
+
 use crate::func_effect_visitor;
 use crate::options::Options;
 use crate::reachability::TruthValue;
@@ -290,7 +292,7 @@ struct Serializer<'a> {
     bytes: Vec<u8>,
     imports: Vec<ImportStatement>, // Encountered import statements
     line_index: LineIndex,
-    tokens: Option<&'a ruff_python_parser::Tokens>,
+    tokens: Option<&'a ruff_python_parser::Tokens>,  // All tokens (not set when serializing imports, and in tests)
     text: &'a str,
     skip_function_bodies: bool, // Whether to omit function bodies without visible effects
     in_class: bool,             // Whether we're currently inside a class definition
@@ -589,6 +591,7 @@ fn extract_type_comments_and_ignores(
                                     );
                                 }
                             } else {
+                                // If parsing as regular type failed, try parsing it as a function type comment.
                                 let as_function_comment = parse_func_type_comment(annotation.as_str());
                                 if let Some((arg_types, ret_type)) = as_function_comment {
                                     let parsed_function_comment = function_comment_to_expr(arg_types, ret_type);
@@ -599,6 +602,7 @@ fn extract_type_comments_and_ignores(
                                         continue;
                                     }
                                 }
+                                // If nothing worked (but we know it is a `# type:` comment), record an error.
                                 type_comments.insert(
                                     line_number, ParsedTypeComment::Invalid(
                                         format!("Syntax error in type comment \"{annotation}\"").to_string()
@@ -955,6 +959,7 @@ fn find_func_type_comment(
     let tokens_before = tokens.before(first_stmt);
     let mut idx = tokens_before.len() - 1;
     loop {
+        // Look for function type comments between colon in `def foo(...):` anr first statement.
         let token = tokens_before[idx].kind();
         if token == TokenKind::Colon {
             break;
@@ -997,6 +1002,7 @@ fn find_func_type_comment(
         }
         idx -= 1;
     }
+    // Also look for per-argument (regular) type comments (in multi-line signatures).
     for (idx, param) in func.parameters.iter().enumerate() {
         if let AnyParameterRef::Variadic(param) = param {
             let location = ser.line_index.line_column(param.start(), ser.text);
@@ -1013,6 +1019,8 @@ fn find_func_type_comment(
                 }
             }
         }
+        // Repeating this block twice is a bit unfortunate, but we do it
+        // because two enum options are slightly different.
         if let AnyParameterRef::NonVariadic(param) = param {
             let location = ser.line_index.line_column(param.start(), ser.text);
             let line = location.line.get();
