@@ -971,7 +971,7 @@ fn find_func_type_comment(
                 ret_type = Some(ret.clone());
                 if args.len() == 1 {
                     if let Some(ast::Expr::EllipsisLiteral(_)) = args.get(0) {
-                        // Special case, single ellipsis like: def (...) -> None.
+                        // Special case, single ellipsis like literally `# type: (...) -> None`.
                         break;
                     }
                 }
