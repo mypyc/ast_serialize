@@ -2,12 +2,12 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-
+use std::process::id;
 use anyhow::Result;
-use ruff_python_ast::{self as ast, StmtFunctionDef};
+use ruff_python_ast::{self as ast, AnyParameterRef, StmtFunctionDef};
 use ruff_python_ast::{Number, PySourceType};
 use ruff_python_ast::str::TripleQuotes::No;
-use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
+use ruff_python_parser::{Mode, ParseOptions, parse_unchecked, TokenKind};
 use ruff_source_file::LineIndex;
 use ruff_text_size::{Ranged, TextRange};
 
@@ -218,6 +218,7 @@ pub(crate) fn serialize_python_file(
         bytes: Vec::new(),
         imports: Vec::new(),
         line_index,
+        tokens: Some(parsed.tokens()),
         text: &source_text,
         skip_function_bodies,
         in_class: false,
@@ -288,6 +289,7 @@ struct Serializer<'a> {
     bytes: Vec<u8>,
     imports: Vec<ImportStatement>, // Encountered import statements
     line_index: LineIndex,
+    tokens: Option<&'a ruff_python_parser::Tokens>,
     text: &'a str,
     skip_function_bodies: bool, // Whether to omit function bodies without visible effects
     in_class: bool,             // Whether we're currently inside a class definition
@@ -682,7 +684,9 @@ fn argument_elide_name(name: &str) -> bool {
     name.starts_with("__") && !name.ends_with("__")
 }
 
-fn serialize_parameters(ser: &mut Serializer, params: &ast::Parameters) {
+fn serialize_parameters(
+    ser: &mut Serializer, params: &ast::Parameters, arg_comments: Vec<Option<ast::Expr>>,
+) {
     // Count total number of arguments
     let mut arg_count = 0;
     arg_count += params.posonlyargs.len();
@@ -699,16 +703,20 @@ fn serialize_parameters(ser: &mut Serializer, params: &ast::Parameters) {
     ser.write_tag(TAG_LIST_GEN);
     ser.write_int(arg_count as i64);
 
+    let mut idx = 0;
+
     // Serialize positional-only arguments
     for param in &params.posonlyargs {
         serialize_argument(
             ser,
             &param.parameter,
+            arg_comments[idx].clone(),
             param.default.as_deref(),
             ARG_POS,
             ARG_OPT,
             true,
         );
+        idx += 1;
     }
 
     // Serialize regular positional arguments
@@ -717,16 +725,21 @@ fn serialize_parameters(ser: &mut Serializer, params: &ast::Parameters) {
         serialize_argument(
             ser,
             &param.parameter,
+            arg_comments[idx].clone(),
             param.default.as_deref(),
             ARG_POS,
             ARG_OPT,
             pos_only,
         );
+        idx += 1;
     }
 
     // Serialize *args
     if let Some(vararg) = &params.vararg {
-        serialize_argument(ser, vararg, None, ARG_STAR, ARG_STAR, false);
+        serialize_argument(
+            ser, vararg, arg_comments[idx].clone(), None, ARG_STAR, ARG_STAR, false
+        );
+        idx += 1;
     }
 
     // Serialize keyword-only arguments
@@ -734,22 +747,27 @@ fn serialize_parameters(ser: &mut Serializer, params: &ast::Parameters) {
         serialize_argument(
             ser,
             &param.parameter,
+            arg_comments[idx].clone(),
             param.default.as_deref(),
             ARG_NAMED,
             ARG_NAMED_OPT,
             false,
         );
+        idx += 1;
     }
 
     // Serialize **kwargs
     if let Some(kwarg) = &params.kwarg {
-        serialize_argument(ser, kwarg, None, ARG_STAR2, ARG_STAR2, false);
+        serialize_argument(
+            ser, kwarg, arg_comments[idx].clone(), None, ARG_STAR2, ARG_STAR2, false
+        );
     }
 }
 
 fn serialize_argument(
     ser: &mut Serializer,
     param: &ast::Parameter,
+    arg_comment: Option<ast::Expr>,
     default_expr: Option<&ast::Expr>,
     kind_no_default: i64,
     kind_with_default: i64,
@@ -769,6 +787,14 @@ fn serialize_argument(
     if let Some(ann) = &param.annotation {
         ser.write_bool(true);
         serialize_type(ser, ann);
+    } else if arg_comment.is_some(){
+        ser.write_bool(true);
+        let mut ret_comment = arg_comment.unwrap();
+        ast::relocate::relocate_expr(&mut ret_comment, param.range());
+        let was_evaluated = ser.is_evaluated;
+        ser.is_evaluated = false;
+        serialize_type(ser, &ret_comment);
+        ser.is_evaluated = was_evaluated;
     } else {
         ser.write_bool(false);
     }
@@ -885,15 +911,71 @@ fn serialize_type_params(ser: &mut Serializer, type_params: &ast::TypeParams) {
 
 fn find_func_type_comment(
     ser: &mut Serializer,
-    func: StmtFunctionDef,
-) -> Option<(Vec<Option<ast::Expr>>, Option<ast::Expr>)> {
-    None
+    func: &StmtFunctionDef,
+) -> (Vec<Option<ast::Expr>>, Option<ast::Expr>) {
+    let mut arg_types = Vec::new();
+    for _ in 0..func.parameters.len() {
+        arg_types.push(None);
+    }
+    let mut ret_type = None;
+    if func.body.is_empty() {
+        return (arg_types, ret_type);
+    }
+    let first_stmt = func.body[0].start();
+    let tokens = ser.tokens.unwrap();
+    let tokens_before = tokens.before(first_stmt);
+    // TODO: check every comment line between first statement and colon.
+    let mut idx = tokens_before.len() - 1;
+    let mut first_comment = None;
+    loop {
+        let token = tokens_before[idx].kind();
+        if token == TokenKind::Indent || token == TokenKind::Newline {
+            idx -= 1;
+            continue;
+        }
+        if token == TokenKind::Comment {
+            first_comment = Some(tokens_before[idx]);
+            idx -= 1;
+        } else {
+            break;
+        }
+    }
+    if let Some(first_comment) = first_comment {
+        let location = ser.line_index.line_column(first_comment.start(), ser.text);
+        let line_number = location.line.get();
+        if let Some(ParsedTypeComment::Function(args, ret)) = ser.type_comments.get(&line_number) {
+            ret_type = Some(ret.clone());
+            if args.len() == func.parameters.len() {
+                for idx in 0..args.len() {
+                    arg_types[idx] = Some(args[idx].clone());
+                }
+            }
+        }
+    }
+    for (idx, param) in func.parameters.iter().enumerate() {
+        if let AnyParameterRef::Variadic(param) = param {
+            let location = ser.line_index.line_column(param.start(), ser.text);
+            let line = location.line.get();
+            if let Some(ParsedTypeComment::Regular(arg_type)) = ser.type_comments.get(&line) {
+                arg_types[idx] = Some(arg_type.clone());
+            }
+        }
+        if let AnyParameterRef::NonVariadic(param) = param {
+            let location = ser.line_index.line_column(param.start(), ser.text);
+            let line = location.line.get();
+            if let Some(ParsedTypeComment::Regular(arg_type)) = ser.type_comments.get(&line) {
+                arg_types[idx] = Some(arg_type.clone());
+            }
+        }
+    }
+    (arg_types, ret_type)
 }
 
 impl Ser for ast::Stmt {
     fn serialize(&self, ser: &mut Serializer) {
         match self {
             ast::Stmt::FunctionDef(f) => {
+                let (arg_comments, ret_comment) = find_func_type_comment(ser, f);
                 if !f.decorator_list.is_empty() {
                     ser.write_tag(TAG_DECORATOR);
                     // Serialize decorators
@@ -916,7 +998,7 @@ impl Ser for ast::Stmt {
                 // Function name
                 ser.write_bytes(f.name.as_bytes());
                 // Parameters
-                serialize_parameters(ser, &f.parameters);
+                serialize_parameters(ser, &f.parameters, arg_comments);
 
                 // Body - may be omitted if skip_function_bodies is enabled
                 let should_serialize_body = if ser.skip_function_bodies {
@@ -975,6 +1057,14 @@ impl Ser for ast::Stmt {
                 if let Some(ret) = &f.returns {
                     ser.write_bool(true); // No return annotation
                     serialize_type(ser, ret);
+                } else if ret_comment.is_some(){
+                    ser.write_bool(true);
+                    let mut ret_comment = ret_comment.unwrap();
+                    ast::relocate::relocate_expr(&mut ret_comment, f.range());
+                    let was_evaluated = ser.is_evaluated;
+                    ser.is_evaluated = false;
+                    serialize_type(ser, &ret_comment);
+                    ser.is_evaluated = was_evaluated;
                 } else {
                     ser.write_bool(false); // No return annotation
                 }
@@ -1953,7 +2043,11 @@ impl Ser for ast::Expr {
 
                 // Arguments (parameters)
                 if let Some(params) = &lambda.parameters {
-                    serialize_parameters(ser, params);
+                    let mut empty = Vec::new();
+                    for _ in 0..params.len() {
+                        empty.push(None);
+                    }
+                    serialize_parameters(ser, params, empty);
                 } else {
                     // No parameters - empty argument list
                     ser.write_tag(TAG_LIST_GEN);
@@ -2693,6 +2787,7 @@ pub fn serialize_imports(
         bytes: Vec::new(),
         imports: Vec::new(),
         line_index,
+        tokens: None,
         text,
         skip_function_bodies: false,
         in_class: false,
@@ -2823,6 +2918,7 @@ mod tests {
             bytes: Vec::new(),
             imports: Vec::new(),
             line_index: index,
+            tokens: None,
             text,
             skip_function_bodies: false,
             in_class: false,
@@ -2953,8 +3049,10 @@ mod tests {
         // Test that we can parse and serialize files with Unicode characters
         let text = "# Comment with 中文\ndef привет():\n    x = \"🎉\"\n";
         let opt = ParseOptions::from(PySourceType::Python);
-        let ast = parse_unchecked(text, opt).into_syntax();
+        let parsed = parse_unchecked(text, opt);
+        let ast = parsed.clone().into_syntax();
         let mut ser = make_ser(text);
+        ser.tokens = Some(parsed.tokens());
 
         // Should not panic
         ast.serialize(&mut ser);
@@ -2998,8 +3096,10 @@ mod tests {
         // Test that Unicode handling works correctly with Windows (CRLF) line endings
         let text = "# Comment with 中文\r\ndef привет():\r\n    x = \"🎉\"\r\n";
         let opt = ParseOptions::from(PySourceType::Python);
-        let ast = parse_unchecked(text, opt).into_syntax();
+        let parsed = parse_unchecked(text, opt);
+        let ast = parsed.clone().into_syntax();
         let mut ser = make_ser(text);
+        ser.tokens = Some(parsed.tokens());
 
         // Should not panic with CRLF line endings
         ast.serialize(&mut ser);
