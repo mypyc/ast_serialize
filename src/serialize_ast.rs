@@ -623,7 +623,7 @@ fn function_comment_to_expr(
     arg_types: Vec<String>,
     ret_type: String,
 ) -> Option<(Vec<ast::Expr>, ast::Expr)> {
-    let mut parsed_arg_types = Vec::new();
+    let mut parsed_arg_types = Vec::with_capacity(arg_types.len());
     for arg_type in arg_types {
         let wrapped = format!("({})", arg_type);
         let parse_result =
@@ -946,7 +946,7 @@ fn find_func_type_comment(
     ser: &mut Serializer,
     func: &StmtFunctionDef,
 ) -> (Vec<Option<ast::Expr>>, Option<ast::Expr>) {
-    let mut arg_types = Vec::new();
+    let mut arg_types = Vec::with_capacity(func.parameters.len());
     for _ in 0..func.parameters.len() {
         arg_types.push(None);
     }
@@ -2125,7 +2125,7 @@ impl Ser for ast::Expr {
 
                 // Arguments (parameters)
                 if let Some(params) = &lambda.parameters {
-                    let mut empty = Vec::new();
+                    let mut empty = Vec::with_capacity(params.len());
                     for _ in 0..params.len() {
                         empty.push(None);
                     }
