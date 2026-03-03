@@ -441,8 +441,7 @@ impl<'a> Serializer<'a> {
         }
     }
 
-    // fallback_range = None means block is optional, so we don't need to serialize
-    // a placeholder in case of a syntax error producing an empty block.
+    // fallback_range = None means deserializer can handle situations when this block is empty.
     fn serialize_block(&mut self, block: &Vec<ast::Stmt>, fallback_range: Option<TextRange>) {
         self.write_tag(TAG_BLOCK);
         self.write_tag(TAG_LIST_GEN);
@@ -1325,7 +1324,7 @@ impl Ser for ast::Stmt {
                 // Serialize else body (optional)
                 if !t.orelse.is_empty() {
                     ser.write_bool(true);
-                    ser.serialize_block(&t.orelse, None);
+                    ser.serialize_block(&t.orelse, Some(t.range()));
                 } else {
                     ser.write_bool(false);
                 }
@@ -1333,7 +1332,7 @@ impl Ser for ast::Stmt {
                 // Serialize finally body (optional)
                 if !t.finalbody.is_empty() {
                     ser.write_bool(true);
-                    ser.serialize_block(&t.finalbody, None);
+                    ser.serialize_block(&t.finalbody, Some(t.range()));
                 } else {
                     ser.write_bool(false);
                 }
