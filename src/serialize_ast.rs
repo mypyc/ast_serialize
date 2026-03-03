@@ -441,11 +441,18 @@ impl<'a> Serializer<'a> {
         }
     }
 
-    fn serialize_block(&mut self, block: &Vec<ast::Stmt>) {
+    // fallback_range = None means block is optional, so we don't need to serialize
+    // a placeholder in case of a syntax error producing an empty block.
+    fn serialize_block(&mut self, block: &Vec<ast::Stmt>, fallback_range: Option<TextRange>) {
         self.write_tag(TAG_BLOCK);
         self.write_tag(TAG_LIST_GEN);
         self.write_usize(block.len());
         self.write_bool(self.current_unreachable);
+        if block.is_empty() && fallback_range.is_some(){
+            // Body was not generated (likely due to a syntax error), but
+            // deserializer expects location for empty bodies.
+            self.write_location(fallback_range.unwrap())
+        }
         for stmt in block {
             stmt.serialize(self);
         }
@@ -885,13 +892,7 @@ impl Ser for ast::Stmt {
                 ser.in_function = true;
 
                 if should_serialize_body {
-                    if f.body.is_empty() {
-                        // Empty body due to syntax error - use serialize_empty_block
-                        // to ensure location is written (required by deserializer)
-                        ser.serialize_empty_block(f.range());
-                    } else {
-                        ser.serialize_block(&f.body);
-                    }
+                    ser.serialize_block(&f.body, Some(f.range()));
                 } else {
                     // Use the range covering the entire body (start of first stmt to end of last stmt)
                     let body_range = if !f.body.is_empty() {
@@ -1142,8 +1143,8 @@ impl Ser for ast::Stmt {
             ast::Stmt::While(s) => {
                 ser.write_tag(TAG_WHILE);
                 s.test.serialize(ser);
-                ser.serialize_block(&s.body);
-                ser.serialize_block(&s.orelse);
+                ser.serialize_block(&s.body, Some(s.range()));
+                ser.serialize_block(&s.orelse, None);
                 ser.write_location(s.range());
             }
             ast::Stmt::For(f) => {
@@ -1153,9 +1154,9 @@ impl Ser for ast::Stmt {
                 // Serialize iterator expression
                 f.iter.serialize(ser);
                 // Serialize body
-                ser.serialize_block(&f.body);
+                ser.serialize_block(&f.body, Some(f.range()));
                 // Serialize else clause
-                ser.serialize_block(&f.orelse);
+                ser.serialize_block(&f.orelse, None);
                 // Serialize is_async flag
                 ser.write_bool(f.is_async);
                 ser.write_location(f.range());
@@ -1172,7 +1173,7 @@ impl Ser for ast::Stmt {
                     item.optional_vars.serialize(ser);
                 }
                 // Serialize body
-                ser.serialize_block(&w.body);
+                ser.serialize_block(&w.body, Some(w.range()));
                 // Serialize is_async flag
                 ser.write_bool(w.is_async);
                 ser.write_location(w.range());
@@ -1198,13 +1199,7 @@ impl Ser for ast::Stmt {
                 // Body - mark that we're inside a class
                 let was_in_class = ser.in_class;
                 ser.in_class = true;
-                if c.body.is_empty() {
-                    // Empty body due to syntax error - use serialize_empty_block
-                    // to ensure location is written (required by deserializer)
-                    ser.serialize_empty_block(c.range());
-                } else {
-                    ser.serialize_block(&c.body);
-                }
+                ser.serialize_block(&c.body, Some(c.range()));
                 ser.in_class = was_in_class;
 
                 // Base classes (positional arguments in class definition)
@@ -1285,7 +1280,7 @@ impl Ser for ast::Stmt {
                 ser.write_tag(TAG_TRY_STMT);
 
                 // Serialize try body
-                ser.serialize_block(&t.body);
+                ser.serialize_block(&t.body, Some(t.range()));
 
                 // Serialize number of except handlers
                 ser.write_tagged_int(t.handlers.len() as i64);
@@ -1322,7 +1317,7 @@ impl Ser for ast::Stmt {
                 for handler in &t.handlers {
                     match handler {
                         ast::ExceptHandler::ExceptHandler(h) => {
-                            ser.serialize_block(&h.body);
+                            ser.serialize_block(&h.body, Some(h.range()));
                         }
                     }
                 }
@@ -1330,7 +1325,7 @@ impl Ser for ast::Stmt {
                 // Serialize else body (optional)
                 if !t.orelse.is_empty() {
                     ser.write_bool(true);
-                    ser.serialize_block(&t.orelse);
+                    ser.serialize_block(&t.orelse, None);
                 } else {
                     ser.write_bool(false);
                 }
@@ -1338,7 +1333,7 @@ impl Ser for ast::Stmt {
                 // Serialize finally body (optional)
                 if !t.finalbody.is_empty() {
                     ser.write_bool(true);
-                    ser.serialize_block(&t.finalbody);
+                    ser.serialize_block(&t.finalbody, None);
                 } else {
                     ser.write_bool(false);
                 }
@@ -1397,7 +1392,7 @@ impl Ser for ast::Stmt {
                     // Serialize optional guard
                     case.guard.serialize(ser);
                     // Serialize body
-                    ser.serialize_block(&case.body);
+                    ser.serialize_block(&case.body, Some(case.range()));
                 }
                 ser.write_location(m.range());
             }
@@ -1538,7 +1533,7 @@ fn serialize_if_stmt(ser: &mut Serializer, stmt: &ast::StmtIf) {
         ser,
         main_body_unreachable,
         main_body_mypy_only,
-        |ser| ser.serialize_block(&stmt.body),
+        |ser| ser.serialize_block(&stmt.body, Some(stmt.range())),
     );
 
     let num_elif = stmt.elif_else_clauses.len() - if has_else { 1 } else { 0 };
@@ -1553,14 +1548,14 @@ fn serialize_if_stmt(ser: &mut Serializer, stmt: &ast::StmtIf) {
                 // elif clause
                 expr.serialize(ser);
                 with_branch_flags(ser, branch_unreachable, branch_mypy_only, |ser| {
-                    ser.serialize_block(&clause.body)
+                    ser.serialize_block(&clause.body, Some(clause.range()))
                 });
             }
             None => {
                 // else clause
                 ser.write_bool(true);
                 with_branch_flags(ser, branch_unreachable, branch_mypy_only, |ser| {
-                    ser.serialize_block(&clause.body)
+                    ser.serialize_block(&clause.body, Some(clause.range()))
                 });
             }
         }
