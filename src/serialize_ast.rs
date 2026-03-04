@@ -234,6 +234,7 @@ pub(crate) fn serialize_python_file(
                         line: first_line,
                         column: 0,
                         message: error,
+                        blocker: false,
                     }
                 )
             }
