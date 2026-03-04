@@ -81,6 +81,7 @@ fn parse(
             dict.set_item("line", error.line)?;
             dict.set_item("column", error.column)?;
             dict.set_item("message", error.message.clone())?;
+            dict.set_item("blocker", error.blocker)?;
             Ok(dict.into())
         })
         .collect();

@@ -1,5 +1,9 @@
 //! Parse type comments from Python source code
 
+use ruff_python_parser;
+use ruff_python_parser::{parse_unchecked, Mode, ParseOptions, TokenKind};
+use ruff_text_size::Ranged;
+
 /// Individual type comment found in a comment line
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeComment {
@@ -155,6 +159,84 @@ pub fn parse_type_comment(comment: &str) -> Option<Vec<String>> {
     None
 }
 
+/// Parse a function type comments like `# type: (list[int], *str) -> None`.
+///
+/// # Arguments
+///
+/// * `comment` - The comment to parse (should *not* include the leading `# type:` part)
+///
+/// # Returns
+///
+/// `Some((Vec<String>, <String>))` argument types and return type, if comment looks valid.
+/// `None` otherise.
+///
+/// Note: this function does *not* validate syntactic validity of individual types.
+pub fn parse_func_type_comment(comment: &str) -> Option<(Vec<String>, String)> {
+    let result = parse_unchecked(comment, ParseOptions::from(Mode::Expression));
+    let mut tokens = result.tokens().iter_with_context();
+
+    let mut arg_types = Vec::new();
+
+    // Function type comment must start with `(`.
+    let mut token = tokens.next();
+    if token?.kind() != TokenKind::Lpar {
+        return None;
+    }
+
+    // Initialize the argument types loop with empty range.
+    // Use peek() heer and below to handle spaces nicely.
+    let mut arg_start = tokens.peek()?.start();
+    let mut arg_end = arg_start;
+    let mut star_stripped = false;
+    loop {
+        token = tokens.next();
+        // If we reach the end before seeing closing `)`, it is invalid type.
+        if token.is_none() {
+            return None;
+        }
+        let token = token.unwrap();
+        match token.kind() {
+            TokenKind::Comma if tokens.nesting() == 1 => {
+                arg_types.push(comment[arg_start.to_usize()..arg_end.to_usize()].to_string());
+                // Reset the argument types loop after comma.
+                arg_start = tokens.peek()?.start();
+                arg_end = arg_start;
+                star_stripped = false;
+            }
+            TokenKind::Star | TokenKind::DoubleStar if tokens.nesting() == 1 => {
+                // Skip no more than two initial stars.
+                if star_stripped {
+                    return None;
+                }
+                if arg_start == token.start() {
+                    arg_start = tokens.peek()?.start();
+                    arg_end = arg_start;
+                    star_stripped = true;
+                }
+            }
+            TokenKind::Rpar if tokens.nesting() == 0 => {
+                if arg_end != arg_start {
+                    // This logic will allow trailing comma in argument list.
+                    arg_types.push(comment[arg_start.to_usize()..arg_end.to_usize()].to_string());
+                }
+                break;
+            }
+            _ => {
+                // Common case, advance to next token.
+                arg_end = token.end();
+            }
+        }
+    }
+    token = tokens.next();
+    // Token immediately following closing `)` must be `->`.
+    if token?.kind() != TokenKind::Rarrow {
+        return None;
+    }
+    // Put the rest in the return type (may be syntactically invalid).
+    let ret_type = &comment[tokens.next()?.start().to_usize()..];
+    Some((arg_types, ret_type.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,5 +382,53 @@ mod tests {
         let result = parse_type_comments("#  type:  int  ").unwrap();
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], TypeComment::TypeAnnotation(s) if s == "int"));
+    }
+
+    #[test]
+    fn test_function_type_comments_basics() {
+        let result = parse_func_type_comment("(dict[str, int], *str) -> None");
+        assert_eq!(Some((vec!["dict[str, int]".to_string(), "str".to_string()], "None".to_string())), result);
+    }
+
+    #[test]
+    fn test_function_type_comments_spaces() {
+        let result = parse_func_type_comment("( dict[str , int], * str ) -> None");
+        assert_eq!(Some((vec!["dict[str , int]".to_string(), "str".to_string()], "None".to_string())), result);
+    }
+
+    #[test]
+    fn test_function_type_comments_trailing_comma() {
+        let result = parse_func_type_comment("(str,) -> None");
+        assert_eq!(Some((vec!["str".to_string()], "None".to_string())), result);
+    }
+
+    #[test]
+    fn test_function_type_comments_empty_ok() {
+        let result = parse_func_type_comment("() -> ()");
+        assert_eq!(Some((vec![], "()".to_string())), result);
+    }
+
+    #[test]
+    fn test_function_type_comments_empty_bad() {
+        let result = parse_func_type_comment("( , ) -> ");
+        assert_eq!(Some((vec!["".to_string()], "".to_string())), result);
+    }
+
+    #[test]
+    fn test_function_type_comments_triple_star() {
+        let result = parse_func_type_comment("(***str) -> None");
+        assert_eq!(None, result);
+    }
+
+    #[test]
+    fn test_function_type_comments_invalid_multiply_kept() {
+        let result = parse_func_type_comment("(a * b) -> a * b");
+        assert_eq!(Some((vec!["a * b".to_string()], "a * b".to_string())), result);
+    }
+
+    #[test]
+    fn test_function_type_comments_literal_special() {
+        let result = parse_func_type_comment("(Literal[',->']) -> {}");
+        assert_eq!(Some((vec!["Literal[',->']".to_string()], "{}".to_string())), result);
     }
 }
