@@ -194,7 +194,7 @@ pub(crate) fn serialize_python_file(
     let parsed = parse_unchecked(&source_text, ParseOptions::from(source_type));
 
     // Extract syntax errors with location information
-    let syntax_errors: Vec<SyntaxError> = parsed
+    let mut syntax_errors: Vec<SyntaxError> = parsed
         .errors()
         .iter()
         .map(|error| {
@@ -208,8 +208,34 @@ pub(crate) fn serialize_python_file(
         .collect();
 
     // Extract both type: ignore comments and type annotation comments in a single pass
-    let (type_ignore_lines, type_comments) =
+    let (mut type_ignore_lines, type_comments) =
         extract_type_comments_and_ignores(parsed.tokens(), &source_text, &line_index);
+
+    let mut top_unreachable = false;
+    let first_ignore = type_ignore_lines.get(0).cloned();
+    let first_statement_line = first_statement_line(parsed.syntax(), &source_text, &line_index);
+
+    if first_ignore.is_some() {
+        let (first_line, codes) = first_ignore.unwrap();
+        if first_line < first_statement_line {
+            top_unreachable = true;
+            type_ignore_lines = Vec::new();
+            if !codes.is_empty() {
+                let joined = codes.join(", ");
+                let error = format!(
+                    "Type ignore with error code is not supported for modules; \
+                    use `# mypy: disable-error-code=\"{}\"`", joined
+                );
+                syntax_errors.push(
+                    SyntaxError {
+                        line: first_line,
+                        column: 0,
+                        message: error,
+                    }
+                )
+            }
+        }
+    }
 
     // Serialize the AST (even if partial due to syntax errors)
     let mut ser = Serializer {
@@ -229,7 +255,12 @@ pub(crate) fn serialize_python_file(
         top_level_getattr: false,
         is_evaluated: true,
     };
-    parsed.syntax().serialize(&mut ser);
+    if top_unreachable {
+        // Module is ignored completely.
+        ser.write_tagged_int(0);
+    } else {
+        parsed.syntax().serialize(&mut ser);
+    }
 
     // Serialize the collected imports, reusing the moved state from serializer
     let import_bytes = serialize_imports(
@@ -510,6 +541,26 @@ impl Ser for ast::Mod {
             ast::Mod::Expression(_) => {
                 panic!("Expression unsupported");
             }
+        }
+    }
+}
+
+fn first_statement_line(
+    tree: &ast::Mod,
+    source: &str,
+    line_index: &LineIndex,
+) -> usize {
+    match tree {
+        ast::Mod::Module(m) => {
+            if m.body.is_empty() {
+                return 0;
+            }
+            let stmt = &m.body[0];
+            let st_loc = line_index.line_column(stmt.start(), source);
+            st_loc.line.get()
+        }
+        ast::Mod::Expression(_) => {
+            panic!("Expression unsupported");
         }
     }
 }
