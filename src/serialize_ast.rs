@@ -12,7 +12,7 @@ use ruff_text_size::{Ranged, TextRange};
 
 use crate::func_effect_visitor;
 use crate::options::Options;
-use crate::reachability::TruthValue;
+use crate::reachability::{assert_will_always_fail, TruthValue};
 use crate::type_comment;
 use crate::type_comment::parse_func_type_comment;
 
@@ -569,8 +569,17 @@ impl Ser for ast::Mod {
     fn serialize(&self, ser: &mut Serializer) {
         match self {
             ast::Mod::Module(m) => {
-                ser.write_tagged_int(m.body.len() as i64);
+                let mut body = Vec::new();
                 for stmt in &m.body {
+                    body.push(stmt);
+                    // This mimics behaviour of old parser; we strip everything
+                    // after a top-level assert that is always false.
+                    if assert_will_always_fail(stmt, &ser.options) {
+                        break
+                    }
+                }
+                ser.write_tagged_int(body.len() as i64);
+                for stmt in body {
                     stmt.serialize(ser);
                 }
             }

@@ -419,6 +419,15 @@ pub(crate) fn consider_sys_platform(expr: &ast::Expr, options: &Options) -> Trut
     }
 }
 
+/// Infer whether a given statement is an assert that will always fail.
+pub(crate) fn assert_will_always_fail(stmt: &ast::Stmt, options: &Options) -> bool {
+    if let ast::Stmt::Assert(a) = stmt {
+        let truth_value = infer_condition_value(a.test.as_ref(), options);
+        return truth_value == TruthValue::AlwaysFalse || truth_value == TruthValue::MypyFalse;
+    }
+    false
+}
+
 /// Infer whether the given condition is always true/false.
 pub(crate) fn infer_condition_value(
     expr: &ast::Expr,
