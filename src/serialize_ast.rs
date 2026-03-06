@@ -1,6 +1,6 @@
 //! Serialize the AST for a given Python file as a mypy AST
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::Result;
@@ -260,6 +260,7 @@ pub(crate) fn serialize_python_file(
         top_level_getattr: false,
         is_evaluated: true,
         extra_errors: Vec::new(),
+        skipped_lines: HashSet::new(),
     };
     if top_unreachable {
         // Module is ignored completely.
@@ -281,6 +282,8 @@ pub(crate) fn serialize_python_file(
     let is_partial_package = is_stub_package && ser.top_level_getattr;
 
     syntax_errors.extend(ser.extra_errors);
+    // Skip type ignores on unreachable lines, so that they are not flagged as unused.
+    type_ignore_lines.retain(|(line, _)| {!ser.skipped_lines.contains(line)});
     Ok((ser.bytes, syntax_errors, type_ignore_lines, import_bytes, is_partial_package))
 }
 
@@ -338,6 +341,7 @@ struct Serializer<'a> {
     top_level_getattr: bool,    // Does module have top-level __getattr__() function
     is_evaluated: bool,         // Current type is evaluated at runtime (or is it a type comment/string)
     extra_errors: Vec<SyntaxError>,  // Additional errors found while processing parsed tree
+    skipped_lines: HashSet<usize>,   // Lines of blocks that were found unreachable
 }
 
 impl<'a> Serializer<'a> {
@@ -494,6 +498,15 @@ impl<'a> Serializer<'a> {
         self.write_tag(TAG_LIST_GEN);
         self.write_usize(block.len());
         self.write_bool(self.current_unreachable);
+        if !block.is_empty() && self.current_unreachable {
+            let st_loc = self.line_index.line_column(block.first().unwrap().start(), self.text);
+            let st_line = st_loc.line.get();
+            let end_loc = self.line_index.line_column(block.last().unwrap().end(), self.text);
+            let end_line = end_loc.line.get();
+            for line in st_line..end_line + 1 {
+                self.skipped_lines.insert(line);
+            }
+        }
         if block.is_empty() && fallback_range.is_some(){
             // Body was not generated (likely due to a syntax error), but
             // deserializer expects location for empty bodies.
@@ -2929,6 +2942,7 @@ pub fn serialize_imports(
         top_level_getattr: false,
         is_evaluated: true,
         extra_errors: Vec::new(),
+        skipped_lines: HashSet::new(),
     };
 
     // Write list of imports
@@ -3061,6 +3075,7 @@ mod tests {
             top_level_getattr: false,
             is_evaluated: true,
             extra_errors: Vec::new(),
+            skipped_lines: HashSet::new(),
         }
     }
 
