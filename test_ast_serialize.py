@@ -18,10 +18,10 @@ def test_parse_simple_file():
         assert isinstance(result[0], bytes), f"Expected bytes, got {type(result)}"
         assert len(result[0]) > 0, "Expected non-empty result"
 
-        print(f"✓ Successfully parsed file: {len(result[0])} bytes")
+        print(f"Successfully parsed file: {len(result[0])} bytes")
         return True
     except Exception as e:
-        print(f"✗ Test failed: {e}")
+        print(f"Test failed: {e}")
         return False
     finally:
         import os
