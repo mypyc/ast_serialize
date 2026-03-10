@@ -1,0 +1,48 @@
+name: Tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.rst'
+      - '**/*.md'
+      - .gitignore
+      - CREDITS
+      - LICENSE
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  main:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Run smoke tests on Ubuntu with Python 3.10
+            python: '3.10'
+            os: ubuntu-24.04-arm
+          - name: Run smoke tests on Windows with Python 3.14
+            python: '3.14'
+            os: windows-latest
+
+    name: ${{ matrix.name }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: cargo test
+      - run: pip install -U .
+      - run: python test_ast_serialize.py

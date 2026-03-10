@@ -15,8 +15,6 @@ Prerequisites:
 - [maturin](https://github.com/PyO3/maturin): `pip install maturin`
 - Access to [mypy new-parser branch](https://github.com/python/mypy/tree/new-parser) for testing
 
-*You must use the `new-parser` branch in the mypy repository to use this with mypy.*
-
 Development build (fast compilation, unoptimized):
 ```bash
 maturin develop
@@ -47,13 +45,12 @@ the main parser test cases in `parse.test` for the expected output format.
 
 **Note:** Run `maturin develop` before testing if you've modified Rust code.
 
-Use `mypy/test/testcheck.py` in the `new-parser` branch to run mypy type checking 
-tests using ast_serialize. The test runner enables the new parser by default. Note
-that many tests are still failing.
+Use `TEST_NATIVE_PARSER=1 pytest mypy/test/testcheck.py` to run mypy type checking 
+tests using ast_serialize. Note that some tests are still skipped.
 
 ## Creating PRs
 
-You can create PRs in this repository, or you can target the `new-parser` mypy branch. 
+You can create PRs in this repository, and/or in mypy repo. 
 Contributions are welcome! Run mypy tests (see above) to get ideas about bugs and missing 
 functionality. If your contributions needs changes in both mypy and ast_serialize, please
 mention this in the PR summary.
