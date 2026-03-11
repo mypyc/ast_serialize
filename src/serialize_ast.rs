@@ -4,9 +4,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::Result;
-use ruff_python_ast::{self as ast, AnyParameterRef, StmtFunctionDef};
-use ruff_python_ast::{Number, PySourceType};
-use ruff_python_parser::{Mode, ParseOptions, parse_unchecked, TokenKind, Tokens};
+use ruff_python_ast::{self as ast, AnyParameterRef, Number, PySourceType, StmtFunctionDef};
+use ruff_python_ast::token::{TokenKind, Tokens};
+use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
 use ruff_source_file::LineIndex;
 use ruff_text_size::{Ranged, TextRange};
 
@@ -118,6 +118,7 @@ const TAG_TYPE_ALIAS_STMT: u8 = 225;
 const TAG_IMPORT_METADATA: u8 = 226;
 const TAG_IMPORTFROM_METADATA: u8 = 227;
 const TAG_IMPORTALL_METADATA: u8 = 228;
+const TAG_TSTRING_EXPR: u8 = 229;
 const TAG_UNBOUND_TYPE: u8 = 104;
 const TAG_TUPLE_TYPE: u8 = 112;
 const TAG_TYPED_DICT_TYPE: u8 = 113;
@@ -640,7 +641,7 @@ fn first_statement_line(
 /// This function combines the functionality of extract_type_ignore_lines and extract_type_comments
 /// to avoid two separate passes over the token sequence, improving cache locality.
 fn extract_type_comments_and_ignores(
-    tokens: &ruff_python_parser::Tokens,
+    tokens: &Tokens,
     source: &str,
     line_index: &LineIndex,
 ) -> (Vec<(usize, Vec<String>)>, HashMap<usize, ParsedTypeComment>) {
@@ -2248,6 +2249,53 @@ impl Ser for ast::Expr {
                 // Serialize the awaited expression
                 await_expr.value.serialize(ser);
                 ser.write_location(await_expr.range());
+            }
+            ast::Expr::TString(ts) => {
+                ser.write_tag(TAG_TSTRING_EXPR);
+                ser.write_tagged_int(ts.value.elements().count() as i64);
+                for part in ts.value.elements() {
+                    match part {
+                        ast::InterpolatedStringElement::Interpolation(tstring_part) => {
+                            ser.write_bool(true);
+                            tstring_part.expression.serialize(ser);
+                            ser.write_bytes(ser.text[tstring_part.expression.range()].as_bytes());
+                            // This matches how mypy old parser handles conversions, but this is
+                            // inconsistent with f-strings, where we use "!s", not just "s", etc.
+                            match tstring_part.conversion {
+                                ast::ConversionFlag::None => {
+                                    ser.write_bool(false);
+                                }
+                                ast::ConversionFlag::Str => {
+                                    ser.write_bool(true);
+                                    ser.write_bytes(b"s");
+                                }
+                                ast::ConversionFlag::Repr => {
+                                    ser.write_bool(true);
+                                    ser.write_bytes(b"r");
+                                }
+                                ast::ConversionFlag::Ascii => {
+                                    ser.write_bool(true);
+                                    ser.write_bytes(b"a");
+                                }
+                            }
+                            // Reuse f-string logic for format specifiers. This is weird, but this is
+                            // what other parsers do (including Python, ruff, and mypy old parser).
+                            if let Some(format_spec) = &tstring_part.format_spec {
+                                ser.write_bool(true);
+                                serialize_fstring_elements(ser, format_spec.elements.iter().collect());
+                                ser.write_location(format_spec.range());
+                            } else {
+                                ser.write_bool(false);
+                            }
+                        }
+                        ast::InterpolatedStringElement::Literal(lit) => {
+                            ser.write_bool(false);
+                            ser.write_bytes(lit.value.as_bytes());
+                            ser.write_location(lit.range());
+                        }
+                    }
+                }
+                ser.write_location(ts.range());
             }
             _ => {
                 panic!("unsupported: {self:?}");

@@ -18,10 +18,10 @@ crate-type = ["cdylib"]
 pyo3 = { version = "0.28.2", features = ["extension-module"] }
 
 # Ruff dependencies for parsing Python - pinned to release tag
-ruff_python_ast = { git = "https://github.com/astral-sh/ruff", tag = "0.12.12" }
-ruff_python_parser = { git = "https://github.com/astral-sh/ruff", tag = "0.12.12" }
-ruff_source_file = { git = "https://github.com/astral-sh/ruff", tag = "0.12.12" }
-ruff_text_size = { git = "https://github.com/astral-sh/ruff", tag = "0.12.12" }
+ruff_python_ast = { git = "https://github.com/astral-sh/ruff", tag = "0.15.5" }
+ruff_python_parser = { git = "https://github.com/astral-sh/ruff", tag = "0.15.5" }
+ruff_source_file = { git = "https://github.com/astral-sh/ruff", tag = "0.15.5" }
+ruff_text_size = { git = "https://github.com/astral-sh/ruff", tag = "0.15.5" }
 
 # Error handling
 anyhow = "1.0"
