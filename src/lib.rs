@@ -47,7 +47,7 @@ fn parse(
     platform: Option<String>,
     always_true: Option<Vec<String>>,
     always_false: Option<Vec<String>>,
-) -> PyResult<(Vec<u8>, Vec<PyObject>, Vec<PyObject>, Vec<u8>, bool)> {
+) -> PyResult<(Vec<u8>, Vec<Py<PyAny>>, Vec<Py<PyAny>>, Vec<u8>, bool)> {
     // Get defaults from Python if not provided
     let python_version = match python_version {
         Some(v) => v,
@@ -64,7 +64,7 @@ fn parse(
 
     let path = Path::new(&fnam);
     let (ast_bytes, syntax_errors, type_ignore_lines, import_bytes, is_partial_package) = py
-        .allow_threads(|| {
+        .detach(|| {
             serialize_ast::serialize_python_file(
                 path,
                 skip_function_bodies,
@@ -74,7 +74,7 @@ fn parse(
         .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
 
     // Convert syntax errors to Python dicts
-    let py_errors: PyResult<Vec<PyObject>> = syntax_errors
+    let py_errors: PyResult<Vec<Py<PyAny>>> = syntax_errors
         .iter()
         .map(|error| {
             let dict = PyDict::new(py);
@@ -88,7 +88,7 @@ fn parse(
     let py_errors = py_errors?;
 
     // Convert type ignore lines to Python tuples (line, error_codes)
-    let py_type_ignores: PyResult<Vec<PyObject>> = type_ignore_lines
+    let py_type_ignores: PyResult<Vec<Py<PyAny>>> = type_ignore_lines
         .iter()
         .map(|(line, error_codes)| {
             let tuple = PyTuple::new(
