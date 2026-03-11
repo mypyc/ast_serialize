@@ -15,7 +15,7 @@ crate-type = ["cdylib"]
 [dependencies]
 # PyO3 for Python bindings
 # Base features always enabled; abi3-py39 is added via stable-abi feature
-pyo3 = { version = "0.23", features = ["extension-module"] }
+pyo3 = { version = "0.28.2", features = ["extension-module"] }
 
 # Ruff dependencies for parsing Python - pinned to release tag
 ruff_python_ast = { git = "https://github.com/astral-sh/ruff", tag = "0.12.12" }
