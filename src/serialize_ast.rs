@@ -12,7 +12,8 @@ use ruff_text_size::{Ranged, TextRange};
 
 use crate::func_effect_visitor;
 use crate::options::Options;
-use crate::reachability::{assert_will_always_fail, TruthValue};
+use crate::reachability::{assert_will_always_fail, infer_condition_value, infer_pattern_value, TruthValue};
+use crate::reachability::TruthValue::AlwaysTrue;
 use crate::type_comment;
 use crate::type_comment::parse_func_type_comment;
 
@@ -1681,19 +1682,33 @@ impl Ser for ast::Stmt {
                 ser.write_location(n.range());
             }
             ast::Stmt::Match(m) => {
+                // Infer all the reachability flags first (to avoid borrowing issues).
+                let flags = {
+                    let mut analyzer = IfReachabilityAnalyzer::new(&ser.options);
+                    let mut flags = Vec::with_capacity(m.cases.len());
+                    for case in &m.cases {
+                        flags.push(
+                            analyzer.match_case_flags(&case.pattern, case.guard.as_ref())
+                        )
+                    }
+                    flags
+                };
                 ser.write_tag(TAG_MATCH_STMT);
                 // Serialize subject expression
                 m.subject.serialize(ser);
                 // Write number of cases
                 ser.write_tagged_int(m.cases.len() as i64);
                 // Serialize each case
-                for case in &m.cases {
+                for (case, (case_unreachable, case_mypy_only))
+                in m.cases.iter().zip(flags.iter().copied()) {
                     // Serialize pattern
                     case.pattern.serialize(ser);
                     // Serialize optional guard
                     case.guard.serialize(ser);
                     // Serialize body
-                    ser.serialize_block(&case.body, Some(case.range()));
+                    with_branch_flags(ser, case_unreachable, case_mypy_only, |ser| {
+                        ser.serialize_block(&case.body, Some(case.range()))
+                    });
                 }
                 ser.write_location(m.range());
             }
@@ -1762,7 +1777,7 @@ impl<'a> IfReachabilityAnalyzer<'a> {
     ///
     /// Returns `(unreachable, mypy_only)` for the corresponding block.
     fn condition_flags(&mut self, expr: &ast::Expr) -> (bool, bool) {
-        let truth = crate::reachability::infer_condition_value(expr, &self.options);
+        let truth = infer_condition_value(expr, &self.options);
 
         let unreachable = self.tail_unreachable || is_always_or_mypy_false(truth);
         let mypy_only =
@@ -1779,6 +1794,27 @@ impl<'a> IfReachabilityAnalyzer<'a> {
     fn else_flags(&self) -> (bool, bool) {
         let unreachable = self.tail_unreachable;
         let mypy_only = !unreachable && self.seen_mypy_false && !self.seen_mypy_true;
+        (unreachable, mypy_only)
+    }
+
+    /// Similar to condition_flags() but for match statement cases.
+    fn match_case_flags(&mut self, pattern: &ast::Pattern, guard: Option<&Box<ast::Expr>>) -> (bool, bool) {
+        let pattern_truth = infer_pattern_value(pattern);
+        let mut guard_truth = AlwaysTrue;
+        if guard.is_some() {
+            guard_truth = infer_condition_value(guard.as_ref().unwrap(), &self.options);
+        }
+        let unreachable = self.tail_unreachable
+            || is_always_or_mypy_false(pattern_truth) || is_always_or_mypy_false(guard_truth);
+        // Since patterns can never be MypyTrue, there is some asymmetry that only guard decides
+        // mypy_only status, and a case cannot be mypy_only because we have seen mypy_false before.
+        // This mimics the logic in old mypy parser.
+        let mypy_only = !unreachable && !self.seen_mypy_true
+            && guard_truth == TruthValue::MypyTrue && is_always_or_mypy_true(pattern_truth);
+        self.tail_unreachable = self.tail_unreachable
+            || is_always_or_mypy_true(guard_truth) && is_always_or_mypy_true(pattern_truth);
+        self.seen_mypy_true = self.seen_mypy_true
+            || guard_truth == TruthValue::MypyTrue && is_always_or_mypy_true(pattern_truth);
         (unreachable, mypy_only)
     }
 }
