@@ -8,7 +8,9 @@ use ruff_text_size::Ranged;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TypeComment {
     /// A type: ignore with optional error codes
-    Ignore(Vec<String>),
+    TypeIgnore(Vec<String>),
+    /// A mypy: ignore with optional error codes
+    MypyIgnore(Vec<String>),
     /// A type annotation (e.g., `list[int]`)
     TypeAnnotation(String),
 }
@@ -43,12 +45,13 @@ pub fn parse_type_comments(comment: &str) -> Option<Vec<TypeComment>> {
     // Remove leading '#' and whitespace
     let trimmed = comment.trim_start_matches('#').trim_start();
 
+    let mypy_comment = trimmed.starts_with("mypy:");
     // Check if it starts with "type:"
-    if !trimmed.starts_with("type:") {
+    if !trimmed.starts_with("type:") && !mypy_comment {
         return None;
     }
 
-    // Get the part after "type:"
+    // Get the part after "type:" or "mypy:"
     let after_type = trimmed["type:".len()..].trim_start();
 
     // Check if it's a type: ignore comment (without type annotation)
@@ -59,37 +62,32 @@ pub fn parse_type_comments(comment: &str) -> Option<Vec<TypeComment>> {
             || after_ignore.starts_with(|c: char| c.is_whitespace() || c == '[')
         {
             // Parse as type: ignore
-            let after_ignore_trimmed = after_ignore.trim_start();
-
-            // Check if there are error codes in brackets
-            if after_ignore_trimmed.starts_with('[') {
-                // Ensure only whitespace was between 'ignore' and '['
-                let whitespace_between =
-                    &after_ignore[..after_ignore.len() - after_ignore_trimmed.len()];
-                if !whitespace_between.chars().all(char::is_whitespace) {
-                    return None;
-                }
-
-                if let Some(bracket_end) = after_ignore_trimmed.find(']') {
-                    // Extract the content between brackets
-                    let codes_str = &after_ignore_trimmed[1..bracket_end];
-
-                    // Split by comma and collect error codes
-                    let error_codes: Vec<String> = codes_str
-                        .split(',')
-                        .map(|s| s.trim().to_string())
-                        .filter(|s| !s.is_empty())
-                        .collect();
-
-                    parts.push(TypeComment::Ignore(error_codes));
-                    return Some(parts);
+            let error_codes = parse_error_codes(after_ignore);
+            if error_codes.is_none() {
+                return None;
+            }
+            if mypy_comment {
+                parts.push(TypeComment::MypyIgnore(error_codes.unwrap()));
+            } else {
+                parts.push(TypeComment::TypeIgnore(error_codes.unwrap()));
+            }
+            if let Some(hash_pos) = after_type.find('#') {
+                // We allow multiple ignore comments per line.
+                if let Some(remainder_ignores) = parse_type_comments(&after_type[hash_pos..]) {
+                    for part in remainder_ignores {
+                        if matches!(part, TypeComment::TypeIgnore(_) | TypeComment::MypyIgnore(_)) {
+                            parts.push(part);
+                        }
+                    }
                 }
             }
-
-            // No error codes specified (just "# type: ignore")
-            parts.push(TypeComment::Ignore(Vec::new()));
             return Some(parts);
         }
+    }
+
+    // Anything like `mypy: enable` etc. doesn't have any special meaning in this context.
+    if mypy_comment && !after_type.starts_with("ignore") {
+        return None;
     }
 
     // Parse type annotation, stopping at the next '#'
@@ -111,7 +109,7 @@ pub fn parse_type_comments(comment: &str) -> Option<Vec<TypeComment>> {
         if let Some(remainder_parts) = parse_type_comments(remainder_str) {
             // Add any ignore parts found
             for part in remainder_parts {
-                if matches!(part, TypeComment::Ignore(_)) {
+                if matches!(part, TypeComment::TypeIgnore(_) | TypeComment::MypyIgnore(_)) {
                     parts.push(part);
                 }
             }
@@ -123,6 +121,35 @@ pub fn parse_type_comments(comment: &str) -> Option<Vec<TypeComment>> {
     } else {
         Some(parts)
     }
+}
+
+fn parse_error_codes(after_ignore: &str) -> Option<Vec<String>> {
+    let after_ignore_trimmed = after_ignore.trim_start();
+
+    // Check if there are error codes in brackets
+    if after_ignore_trimmed.starts_with('[') {
+        // Ensure only whitespace was between 'ignore' and '['
+        let whitespace_between =
+            &after_ignore[..after_ignore.len() - after_ignore_trimmed.len()];
+        if !whitespace_between.chars().all(char::is_whitespace) {
+            return None;
+        }
+
+        if let Some(bracket_end) = after_ignore_trimmed.find(']') {
+            // Extract the content between brackets
+            let codes_str = &after_ignore_trimmed[1..bracket_end];
+
+            // Split by comma and collect error codes
+            let error_codes: Vec<String> = codes_str
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            return Some(error_codes);
+        }
+    }
+    // No error codes specified (just "# type: ignore")
+    Some(Vec::new())
 }
 
 /// Parse a type comment and extract error codes if it contains a type ignore comment.
@@ -152,7 +179,7 @@ pub fn parse_type_comment(comment: &str) -> Option<Vec<String>> {
     let parts = parse_type_comments(comment)?;
     // Find the first Ignore part
     for part in parts {
-        if let TypeComment::Ignore(codes) = part {
+        if let TypeComment::TypeIgnore(codes) = part {
             return Some(codes);
         }
     }
@@ -319,11 +346,66 @@ mod tests {
     fn test_type_comment_kind_ignore() {
         let result = parse_type_comments("# type: ignore").unwrap();
         assert_eq!(result.len(), 1);
-        assert!(matches!(&result[0], TypeComment::Ignore(codes) if codes.is_empty()));
+        assert!(matches!(&result[0], TypeComment::TypeIgnore(codes) if codes.is_empty()));
 
         let result = parse_type_comments("# type: ignore[arg-type]").unwrap();
         assert_eq!(result.len(), 1);
-        assert!(matches!(&result[0], TypeComment::Ignore(codes) if codes == &vec!["arg-type".to_string()]));
+        assert!(matches!(&result[0], TypeComment::TypeIgnore(codes) if codes == &vec!["arg-type".to_string()]));
+    }
+
+    #[test]
+    fn test_type_comment_kind_mypy_ignore() {
+        let result = parse_type_comments("# mypy: ignore").unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(matches!(&result[0], TypeComment::MypyIgnore(codes) if codes.is_empty()));
+
+        let result = parse_type_comments("# mypy: ignore[arg-type]").unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(matches!(&result[0], TypeComment::MypyIgnore(codes) if codes == &vec!["arg-type".to_string()]));
+
+        let result = parse_type_comments("# mypy: ignore[arg-type]  # whatever").unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(matches!(&result[0], TypeComment::MypyIgnore(codes) if codes == &vec!["arg-type".to_string()]));
+    }
+
+    #[test]
+    fn test_type_comment_kind_ignore_mixed() {
+        let result = parse_type_comments("# mypy: ignore[foo]  # type: ignore[bar]").unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(matches!(&result[0], TypeComment::MypyIgnore(codes) if codes == &vec!["foo".to_string()]));
+        assert!(matches!(&result[1], TypeComment::TypeIgnore(codes) if codes == &vec!["bar".to_string()]));
+
+        let result = parse_type_comments("# type: ignore[foo]  # mypy: ignore[bar]").unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(matches!(&result[0], TypeComment::TypeIgnore(codes) if codes == &vec!["foo".to_string()]));
+        assert!(matches!(&result[1], TypeComment::MypyIgnore(codes) if codes == &vec!["bar".to_string()]));
+    }
+
+    #[test]
+    fn test_type_comment_kind_ignore_mixed_with_suffix() {
+        let result = parse_type_comments("# mypy: ignore[foo]  # type: ignore[bar]  # whatever").unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(matches!(&result[0], TypeComment::MypyIgnore(codes) if codes == &vec!["foo".to_string()]));
+        assert!(matches!(&result[1], TypeComment::TypeIgnore(codes) if codes == &vec!["bar".to_string()]));
+
+        let result = parse_type_comments("# type: ignore[foo]  # mypy: ignore[bar]  # whatever").unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(matches!(&result[0], TypeComment::TypeIgnore(codes) if codes == &vec!["foo".to_string()]));
+        assert!(matches!(&result[1], TypeComment::MypyIgnore(codes) if codes == &vec!["bar".to_string()]));
+    }
+
+    #[test]
+    fn test_type_comment_kind_mypy_ignore_with_annotation() {
+        // Type annotation followed by mypy: ignore on the same line
+        let result = parse_type_comments("# type: str # mypy: ignore").unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(matches!(&result[0], TypeComment::TypeAnnotation(s) if s == "str"));
+        assert!(matches!(&result[1], TypeComment::MypyIgnore(codes) if codes.is_empty()));
+
+        let result = parse_type_comments("# type: list[int] # mypy: ignore[arg-type]").unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(matches!(&result[0], TypeComment::TypeAnnotation(s) if s == "list[int]"));
+        assert!(matches!(&result[1], TypeComment::MypyIgnore(codes) if codes == &vec!["arg-type".to_string()]));
     }
 
     #[test]
@@ -358,12 +440,12 @@ mod tests {
         let result = parse_type_comments("# type: str # type: ignore").unwrap();
         assert_eq!(result.len(), 2);
         assert!(matches!(&result[0], TypeComment::TypeAnnotation(s) if s == "str"));
-        assert!(matches!(&result[1], TypeComment::Ignore(codes) if codes.is_empty()));
+        assert!(matches!(&result[1], TypeComment::TypeIgnore(codes) if codes.is_empty()));
 
         let result = parse_type_comments("# type: list[int] # type: ignore[arg-type]").unwrap();
         assert_eq!(result.len(), 2);
         assert!(matches!(&result[0], TypeComment::TypeAnnotation(s) if s == "list[int]"));
-        assert!(matches!(&result[1], TypeComment::Ignore(codes) if codes == &vec!["arg-type".to_string()]));
+        assert!(matches!(&result[1], TypeComment::TypeIgnore(codes) if codes == &vec!["arg-type".to_string()]));
     }
 
     #[test]
