@@ -176,7 +176,7 @@ pub(crate) fn serialize_python_file(
     file_path: &Path,
     skip_function_bodies: bool,
     options: Options,
-) -> Result<(Vec<u8>, Vec<SyntaxError>, Vec<(usize, Vec<String>)>, Vec<u8>, bool)> {
+) -> Result<(Vec<u8>, Vec<SyntaxError>, Vec<(usize, Vec<String>)>, Vec<(usize, Vec<String>)>, Vec<u8>, bool)> {
     let source_type = PySourceType::from(file_path);
     let source_text = std::fs::read_to_string(file_path)?;
     let line_index = LineIndex::from_source_text(&source_text);
@@ -287,7 +287,7 @@ pub(crate) fn serialize_python_file(
     // Skip type ignores on unreachable lines, so that they are not flagged as unused.
     type_ignore_lines.retain(|(line, _)| {!ser.skipped_lines.contains(line)});
     mypy_ignore_lines.retain(|(line, _)| {!ser.skipped_lines.contains(line)});
-    Ok((ser.bytes, syntax_errors, type_ignore_lines, import_bytes, is_partial_package))
+    Ok((ser.bytes, syntax_errors, type_ignore_lines, mypy_ignore_lines, import_bytes, is_partial_package))
 }
 
 // Bit flags for import statement metadata

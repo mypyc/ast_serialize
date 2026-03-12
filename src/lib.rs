@@ -70,7 +70,7 @@ fn parse(
     }
 
     let path = Path::new(&fnam);
-    let (ast_bytes, syntax_errors, type_ignore_lines, import_bytes, is_partial_package) = py
+    let (ast_bytes, syntax_errors, type_ignore_lines, mypy_ignore_lines, import_bytes, is_partial_package) = py
         .detach(|| {
             serialize_ast::serialize_python_file(
                 path,
@@ -95,7 +95,22 @@ fn parse(
     let py_errors = py_errors?;
 
     // Convert type ignore lines to Python tuples (line, error_codes)
-    let py_type_ignores: PyResult<Vec<Py<PyAny>>> = type_ignore_lines
+    let py_type_ignores = to_py_tuples(py, type_ignore_lines)?;
+
+    // Same for mypy: ignore comments.
+    let py_mypy_ignores = to_py_tuples(py, mypy_ignore_lines)?;
+
+    // Add various mypy-specific extra information about AST.
+    let ast_data = PyDict::new(py);
+    ast_data.set_item("is_partial_package", is_partial_package)?;
+    ast_data.set_item("mypy_ignores", py_mypy_ignores)?;
+    let ast_data = ast_data.into();
+
+    Ok((ast_bytes, py_errors, py_type_ignores, import_bytes, ast_data))
+}
+
+fn to_py_tuples(py: Python, ignore_lines: Vec<(usize, Vec<String>)>) -> PyResult<Vec<Py<PyAny>>> {
+    ignore_lines
         .iter()
         .map(|(line, error_codes)| {
             let tuple = PyTuple::new(
@@ -107,15 +122,7 @@ fn parse(
             )?;
             Ok(tuple.into())
         })
-        .collect();
-    let py_type_ignores = py_type_ignores?;
-
-    // Add various mypy-specific extra information about AST.
-    let ast_data = PyDict::new(py);
-    ast_data.set_item("is_partial_package", is_partial_package)?;
-    let ast_data = ast_data.into();
-
-    Ok((ast_bytes, py_errors, py_type_ignores, import_bytes, ast_data))
+        .collect()
 }
 
 /// Get the default Python version from sys.version_info
