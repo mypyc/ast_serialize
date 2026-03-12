@@ -1,6 +1,7 @@
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 use std::path::Path;
+use pyo3::exceptions::PyValueError;
 
 mod func_effect_visitor;
 mod options;
@@ -33,6 +34,7 @@ pub mod type_comment;
 #[pyfunction]
 #[pyo3(signature = (
     fnam,
+    source=None,
     skip_function_bodies=false,
     python_version=None,
     platform=None,
@@ -42,12 +44,13 @@ pub mod type_comment;
 fn parse(
     py: Python,
     fnam: String,
+    source: Option<String>,
     skip_function_bodies: bool,
     python_version: Option<(u32, u32)>,
     platform: Option<String>,
     always_true: Option<Vec<String>>,
     always_false: Option<Vec<String>>,
-) -> PyResult<(Vec<u8>, Vec<Py<PyAny>>, Vec<Py<PyAny>>, Vec<u8>, bool)> {
+) -> PyResult<(Vec<u8>, Vec<Py<PyAny>>, Vec<Py<PyAny>>, Vec<u8>, Py<PyAny>)> {
     // Get defaults from Python if not provided
     let python_version = match python_version {
         Some(v) => v,
@@ -62,6 +65,10 @@ fn parse(
     let always_true = always_true.unwrap_or_default();
     let always_false = always_false.unwrap_or_default();
 
+    if source.is_some() {
+        return Err(PyErr::new::<PyValueError, _>("Source parsing is not supported yet"));
+    }
+
     let path = Path::new(&fnam);
     let (ast_bytes, syntax_errors, type_ignore_lines, import_bytes, is_partial_package) = py
         .detach(|| {
@@ -71,7 +78,7 @@ fn parse(
                 options::Options::new(python_version, platform, always_true, always_false),
             )
         })
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(e.to_string()))?;
+        .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
 
     // Convert syntax errors to Python dicts
     let py_errors: PyResult<Vec<Py<PyAny>>> = syntax_errors
@@ -103,7 +110,12 @@ fn parse(
         .collect();
     let py_type_ignores = py_type_ignores?;
 
-    Ok((ast_bytes, py_errors, py_type_ignores, import_bytes, is_partial_package))
+    // Add various mypy-specific extra information about AST.
+    let ast_data = PyDict::new(py);
+    ast_data.set_item("is_partial_package", is_partial_package)?;
+    let ast_data = ast_data.into();
+
+    Ok((ast_bytes, py_errors, py_type_ignores, import_bytes, ast_data))
 }
 
 /// Get the default Python version from sys.version_info

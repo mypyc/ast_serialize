@@ -1,7 +1,8 @@
 //! Parse type comments from Python source code
 
 use ruff_python_parser;
-use ruff_python_parser::{parse_unchecked, Mode, ParseOptions, TokenKind};
+use ruff_python_parser::{parse_unchecked, Mode, ParseOptions};
+use ruff_python_ast::token::{TokenKind};
 use ruff_text_size::Ranged;
 
 /// Individual type comment found in a comment line

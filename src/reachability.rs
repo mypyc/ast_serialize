@@ -468,6 +468,19 @@ pub(crate) fn infer_condition_value(
     }
 }
 
+pub(crate) fn infer_pattern_value(pattern: &ast::Pattern) -> TruthValue {
+    match pattern {
+        ast::Pattern::MatchAs(pattern) if pattern.pattern.is_none() => {
+            TruthValue::AlwaysTrue
+        }
+        ast::Pattern::MatchOr(pattern)
+        if pattern.patterns.iter().any(|p| {infer_pattern_value(p) == TruthValue::AlwaysTrue}) => {
+            TruthValue::AlwaysTrue
+        }
+        _ => TruthValue::TruthValueUnknown
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

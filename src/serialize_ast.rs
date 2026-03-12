@@ -4,15 +4,16 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::Result;
-use ruff_python_ast::{self as ast, AnyParameterRef, StmtFunctionDef};
-use ruff_python_ast::{Number, PySourceType};
-use ruff_python_parser::{Mode, ParseOptions, parse_unchecked, TokenKind, Tokens};
+use ruff_python_ast::{self as ast, AnyParameterRef, Number, PySourceType, StmtFunctionDef};
+use ruff_python_ast::token::{TokenKind, Tokens};
+use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
 use ruff_source_file::LineIndex;
 use ruff_text_size::{Ranged, TextRange};
 
 use crate::func_effect_visitor;
 use crate::options::Options;
-use crate::reachability::{assert_will_always_fail, TruthValue};
+use crate::reachability::{assert_will_always_fail, infer_condition_value, infer_pattern_value, TruthValue};
+use crate::reachability::TruthValue::AlwaysTrue;
 use crate::type_comment;
 use crate::type_comment::parse_func_type_comment;
 
@@ -118,6 +119,7 @@ const TAG_TYPE_ALIAS_STMT: u8 = 225;
 const TAG_IMPORT_METADATA: u8 = 226;
 const TAG_IMPORTFROM_METADATA: u8 = 227;
 const TAG_IMPORTALL_METADATA: u8 = 228;
+const TAG_TSTRING_EXPR: u8 = 229;
 const TAG_UNBOUND_TYPE: u8 = 104;
 const TAG_TUPLE_TYPE: u8 = 112;
 const TAG_TYPED_DICT_TYPE: u8 = 113;
@@ -641,7 +643,7 @@ fn first_statement_line(
 /// This function combines the functionality of extract_type_ignore_lines and extract_type_comments
 /// to avoid two separate passes over the token sequence, improving cache locality.
 fn extract_type_comments_and_ignores(
-    tokens: &ruff_python_parser::Tokens,
+    tokens: &Tokens,
     source: &str,
     line_index: &LineIndex,
 ) -> (Vec<(usize, Vec<String>)>, Vec<(usize, Vec<String>)>, HashMap<usize, ParsedTypeComment>) {
@@ -1686,19 +1688,33 @@ impl Ser for ast::Stmt {
                 ser.write_location(n.range());
             }
             ast::Stmt::Match(m) => {
+                // Infer all the reachability flags first (to avoid borrowing issues).
+                let flags = {
+                    let mut analyzer = IfReachabilityAnalyzer::new(&ser.options);
+                    let mut flags = Vec::with_capacity(m.cases.len());
+                    for case in &m.cases {
+                        flags.push(
+                            analyzer.match_case_flags(&case.pattern, case.guard.as_ref())
+                        )
+                    }
+                    flags
+                };
                 ser.write_tag(TAG_MATCH_STMT);
                 // Serialize subject expression
                 m.subject.serialize(ser);
                 // Write number of cases
                 ser.write_tagged_int(m.cases.len() as i64);
                 // Serialize each case
-                for case in &m.cases {
+                for (case, (case_unreachable, case_mypy_only))
+                in m.cases.iter().zip(flags.iter().copied()) {
                     // Serialize pattern
                     case.pattern.serialize(ser);
                     // Serialize optional guard
                     case.guard.serialize(ser);
                     // Serialize body
-                    ser.serialize_block(&case.body, Some(case.range()));
+                    with_branch_flags(ser, case_unreachable, case_mypy_only, |ser| {
+                        ser.serialize_block(&case.body, Some(case.range()))
+                    });
                 }
                 ser.write_location(m.range());
             }
@@ -1767,7 +1783,7 @@ impl<'a> IfReachabilityAnalyzer<'a> {
     ///
     /// Returns `(unreachable, mypy_only)` for the corresponding block.
     fn condition_flags(&mut self, expr: &ast::Expr) -> (bool, bool) {
-        let truth = crate::reachability::infer_condition_value(expr, &self.options);
+        let truth = infer_condition_value(expr, &self.options);
 
         let unreachable = self.tail_unreachable || is_always_or_mypy_false(truth);
         let mypy_only =
@@ -1784,6 +1800,27 @@ impl<'a> IfReachabilityAnalyzer<'a> {
     fn else_flags(&self) -> (bool, bool) {
         let unreachable = self.tail_unreachable;
         let mypy_only = !unreachable && self.seen_mypy_false && !self.seen_mypy_true;
+        (unreachable, mypy_only)
+    }
+
+    /// Similar to condition_flags() but for match statement cases.
+    fn match_case_flags(&mut self, pattern: &ast::Pattern, guard: Option<&Box<ast::Expr>>) -> (bool, bool) {
+        let pattern_truth = infer_pattern_value(pattern);
+        let mut guard_truth = AlwaysTrue;
+        if guard.is_some() {
+            guard_truth = infer_condition_value(guard.as_ref().unwrap(), &self.options);
+        }
+        let unreachable = self.tail_unreachable
+            || is_always_or_mypy_false(pattern_truth) || is_always_or_mypy_false(guard_truth);
+        // Since patterns can never be MypyTrue, there is some asymmetry that only guard decides
+        // mypy_only status, and a case cannot be mypy_only because we have seen mypy_false before.
+        // This mimics the logic in old mypy parser.
+        let mypy_only = !unreachable && !self.seen_mypy_true
+            && guard_truth == TruthValue::MypyTrue && is_always_or_mypy_true(pattern_truth);
+        self.tail_unreachable = self.tail_unreachable
+            || is_always_or_mypy_true(guard_truth) && is_always_or_mypy_true(pattern_truth);
+        self.seen_mypy_true = self.seen_mypy_true
+            || guard_truth == TruthValue::MypyTrue && is_always_or_mypy_true(pattern_truth);
         (unreachable, mypy_only)
     }
 }
@@ -2253,6 +2290,53 @@ impl Ser for ast::Expr {
                 // Serialize the awaited expression
                 await_expr.value.serialize(ser);
                 ser.write_location(await_expr.range());
+            }
+            ast::Expr::TString(ts) => {
+                ser.write_tag(TAG_TSTRING_EXPR);
+                ser.write_tagged_int(ts.value.elements().count() as i64);
+                for part in ts.value.elements() {
+                    match part {
+                        ast::InterpolatedStringElement::Interpolation(tstring_part) => {
+                            ser.write_bool(true);
+                            tstring_part.expression.serialize(ser);
+                            ser.write_bytes(ser.text[tstring_part.expression.range()].as_bytes());
+                            // This matches how mypy old parser handles conversions, but this is
+                            // inconsistent with f-strings, where we use "!s", not just "s", etc.
+                            match tstring_part.conversion {
+                                ast::ConversionFlag::None => {
+                                    ser.write_bool(false);
+                                }
+                                ast::ConversionFlag::Str => {
+                                    ser.write_bool(true);
+                                    ser.write_bytes(b"s");
+                                }
+                                ast::ConversionFlag::Repr => {
+                                    ser.write_bool(true);
+                                    ser.write_bytes(b"r");
+                                }
+                                ast::ConversionFlag::Ascii => {
+                                    ser.write_bool(true);
+                                    ser.write_bytes(b"a");
+                                }
+                            }
+                            // Reuse f-string logic for format specifiers. This is weird, but this is
+                            // what other parsers do (including Python, ruff, and mypy old parser).
+                            if let Some(format_spec) = &tstring_part.format_spec {
+                                ser.write_bool(true);
+                                serialize_fstring_elements(ser, format_spec.elements.iter().collect());
+                                ser.write_location(format_spec.range());
+                            } else {
+                                ser.write_bool(false);
+                            }
+                        }
+                        ast::InterpolatedStringElement::Literal(lit) => {
+                            ser.write_bool(false);
+                            ser.write_bytes(lit.value.as_bytes());
+                            ser.write_location(lit.range());
+                        }
+                    }
+                }
+                ser.write_location(ts.range());
             }
             _ => {
                 panic!("unsupported: {self:?}");

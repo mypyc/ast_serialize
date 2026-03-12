@@ -13,12 +13,17 @@ class _ParseError(TypedDict):
     blocker: NotRequired[bool]
     code: NotRequired[str]
 
+@type_check_only
+class _ASTData(TypedDict):
+    is_partial_package: bool
+
 def parse(
     fnam: str,
+    source: str | None = None,
     skip_function_bodies: bool = False,
     python_version: tuple[int, int] | None = None,
     platform: str | None = None,
     always_true: list[str] | None = None,
     always_false: list[str] | None = None,
-) -> tuple[bytes, list[_ParseError], _TypeIgnores, bytes, bool]:
+) -> tuple[bytes, list[_ParseError], _TypeIgnores, bytes, _ASTData]:
     ...
