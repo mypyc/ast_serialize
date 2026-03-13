@@ -16,6 +16,7 @@ class _ParseError(TypedDict):
 @type_check_only
 class _ASTData(TypedDict):
     is_partial_package: bool
+    uses_template_strings: bool
     mypy_ignores: _TypeIgnores
 
 def parse(

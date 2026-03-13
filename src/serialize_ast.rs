@@ -176,7 +176,7 @@ pub(crate) fn serialize_python_file(
     file_path: &Path,
     skip_function_bodies: bool,
     options: Options,
-) -> Result<(Vec<u8>, Vec<SyntaxError>, Vec<(usize, Vec<String>)>, Vec<(usize, Vec<String>)>, Vec<u8>, bool)> {
+) -> Result<(Vec<u8>, Vec<SyntaxError>, Vec<(usize, Vec<String>)>, Vec<(usize, Vec<String>)>, Vec<u8>, bool, bool)> {
     let source_type = PySourceType::from(file_path);
     let source_text = std::fs::read_to_string(file_path)?;
     let line_index = LineIndex::from_source_text(&source_text);
@@ -263,6 +263,7 @@ pub(crate) fn serialize_python_file(
         is_evaluated: true,
         extra_errors: Vec::new(),
         skipped_lines: HashSet::new(),
+        uses_template_strings: false,
     };
     if top_unreachable {
         // Module is ignored completely.
@@ -287,7 +288,7 @@ pub(crate) fn serialize_python_file(
     // Skip type ignores on unreachable lines, so that they are not flagged as unused.
     type_ignore_lines.retain(|(line, _)| {!ser.skipped_lines.contains(line)});
     mypy_ignore_lines.retain(|(line, _)| {!ser.skipped_lines.contains(line)});
-    Ok((ser.bytes, syntax_errors, type_ignore_lines, mypy_ignore_lines, import_bytes, is_partial_package))
+    Ok((ser.bytes, syntax_errors, type_ignore_lines, mypy_ignore_lines, import_bytes, is_partial_package, ser.uses_template_strings))
 }
 
 // Bit flags for import statement metadata
@@ -345,6 +346,7 @@ struct Serializer<'a> {
     is_evaluated: bool,         // Current type is evaluated at runtime (or is it a type comment/string)
     extra_errors: Vec<SyntaxError>,  // Additional errors found while processing parsed tree
     skipped_lines: HashSet<usize>,   // Lines of blocks that were found unreachable
+    uses_template_strings: bool,     // Whether parsed file uses t-strings
 }
 
 impl<'a> Serializer<'a> {
@@ -2292,6 +2294,7 @@ impl Ser for ast::Expr {
                 ser.write_location(await_expr.range());
             }
             ast::Expr::TString(ts) => {
+                ser.uses_template_strings = true;
                 ser.write_tag(TAG_TSTRING_EXPR);
                 ser.write_tagged_int(ts.value.elements().count() as i64);
                 for part in ts.value.elements() {
@@ -3041,6 +3044,7 @@ pub fn serialize_imports(
         is_evaluated: true,
         extra_errors: Vec::new(),
         skipped_lines: HashSet::new(),
+        uses_template_strings: false,
     };
 
     // Write list of imports
@@ -3174,6 +3178,7 @@ mod tests {
             is_evaluated: true,
             extra_errors: Vec::new(),
             skipped_lines: HashSet::new(),
+            uses_template_strings: false,
         }
     }
 

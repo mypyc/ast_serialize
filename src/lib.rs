@@ -70,7 +70,15 @@ fn parse(
     }
 
     let path = Path::new(&fnam);
-    let (ast_bytes, syntax_errors, type_ignore_lines, mypy_ignore_lines, import_bytes, is_partial_package) = py
+    let (
+        ast_bytes,
+        syntax_errors,
+        type_ignore_lines,
+        mypy_ignore_lines,
+        import_bytes,
+        is_partial_package,
+        uses_template_strings
+    ) = py
         .detach(|| {
             serialize_ast::serialize_python_file(
                 path,
@@ -104,6 +112,7 @@ fn parse(
     let ast_data = PyDict::new(py);
     ast_data.set_item("is_partial_package", is_partial_package)?;
     ast_data.set_item("mypy_ignores", py_mypy_ignores)?;
+    ast_data.set_item("uses_template_strings", uses_template_strings)?;
     let ast_data = ast_data.into();
 
     Ok((ast_bytes, py_errors, py_type_ignores, import_bytes, ast_data))
