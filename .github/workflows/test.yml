@@ -46,3 +46,4 @@ jobs:
       - run: cargo test
       - run: pip install -U .
       - run: python test_ast_serialize.py
+      - run: cargo fmt --check

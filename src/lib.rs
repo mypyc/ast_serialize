@@ -1,7 +1,7 @@
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple};
 use std::path::Path;
-use pyo3::exceptions::PyValueError;
 
 mod func_effect_visitor;
 mod options;
@@ -66,7 +66,9 @@ fn parse(
     let always_false = always_false.unwrap_or_default();
 
     if source.is_some() {
-        return Err(PyErr::new::<PyValueError, _>("Source parsing is not supported yet"));
+        return Err(PyErr::new::<PyValueError, _>(
+            "Source parsing is not supported yet",
+        ));
     }
 
     let path = Path::new(&fnam);
@@ -77,7 +79,7 @@ fn parse(
         mypy_ignore_lines,
         import_bytes,
         is_partial_package,
-        uses_template_strings
+        uses_template_strings,
     ) = py
         .detach(|| {
             serialize_ast::serialize_python_file(
@@ -115,7 +117,13 @@ fn parse(
     ast_data.set_item("uses_template_strings", uses_template_strings)?;
     let ast_data = ast_data.into();
 
-    Ok((ast_bytes, py_errors, py_type_ignores, import_bytes, ast_data))
+    Ok((
+        ast_bytes,
+        py_errors,
+        py_type_ignores,
+        import_bytes,
+        ast_data,
+    ))
 }
 
 fn to_py_tuples(py: Python, ignore_lines: Vec<(usize, Vec<String>)>) -> PyResult<Vec<Py<PyAny>>> {

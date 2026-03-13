@@ -429,10 +429,7 @@ pub(crate) fn assert_will_always_fail(stmt: &ast::Stmt, options: &Options) -> bo
 }
 
 /// Infer whether the given condition is always true/false.
-pub(crate) fn infer_condition_value(
-    expr: &ast::Expr,
-    options: &Options,
-) -> TruthValue {
+pub(crate) fn infer_condition_value(expr: &ast::Expr, options: &Options) -> TruthValue {
     match expr {
         // Handle unary "not" expressions
         ast::Expr::UnaryOp(unary) if matches!(unary.op, ast::UnaryOp::Not) => {
@@ -470,14 +467,16 @@ pub(crate) fn infer_condition_value(
 
 pub(crate) fn infer_pattern_value(pattern: &ast::Pattern) -> TruthValue {
     match pattern {
-        ast::Pattern::MatchAs(pattern) if pattern.pattern.is_none() => {
-            TruthValue::AlwaysTrue
-        }
+        ast::Pattern::MatchAs(pattern) if pattern.pattern.is_none() => TruthValue::AlwaysTrue,
         ast::Pattern::MatchOr(pattern)
-        if pattern.patterns.iter().any(|p| {infer_pattern_value(p) == TruthValue::AlwaysTrue}) => {
+            if pattern
+                .patterns
+                .iter()
+                .any(|p| infer_pattern_value(p) == TruthValue::AlwaysTrue) =>
+        {
             TruthValue::AlwaysTrue
         }
-        _ => TruthValue::TruthValueUnknown
+        _ => TruthValue::TruthValueUnknown,
     }
 }
 
@@ -557,7 +556,11 @@ mod tests {
 
         // Name not in either list
         assert_eq!(
-            parse_and_infer("UNKNOWN", &[String::from("DEBUG")], &[String::from("PRODUCTION")]),
+            parse_and_infer(
+                "UNKNOWN",
+                &[String::from("DEBUG")],
+                &[String::from("PRODUCTION")]
+            ),
             TruthValue::TruthValueUnknown
         );
 
@@ -615,7 +618,10 @@ mod tests {
         assert_eq!(infer_expr("PY2 or MYPY"), TruthValue::MypyTrue);
 
         // All MYPY_FALSE -> MYPY_FALSE
-        assert_eq!(infer_expr("(not MYPY) or (not TYPE_CHECKING)"), TruthValue::MypyFalse);
+        assert_eq!(
+            infer_expr("(not MYPY) or (not TYPE_CHECKING)"),
+            TruthValue::MypyFalse
+        );
 
         // All ALWAYS_FALSE or MYPY_FALSE -> ALWAYS_FALSE
         assert_eq!(infer_expr("PY2 or (not MYPY)"), TruthValue::AlwaysFalse);
@@ -837,14 +843,8 @@ mod tests {
         // Not an integer or tuple of integers
         assert_eq!(contains_int_or_tuple_of_ints(&parse_expr("'hello'")), None);
         assert_eq!(contains_int_or_tuple_of_ints(&parse_expr("3.14")), None);
-        assert_eq!(
-            contains_int_or_tuple_of_ints(&parse_expr("(1, 'a')")),
-            None
-        );
-        assert_eq!(
-            contains_int_or_tuple_of_ints(&parse_expr("(1, 2.5)")),
-            None
-        );
+        assert_eq!(contains_int_or_tuple_of_ints(&parse_expr("(1, 'a')")), None);
+        assert_eq!(contains_int_or_tuple_of_ints(&parse_expr("(1, 2.5)")), None);
     }
 
     #[test]
@@ -983,25 +983,37 @@ mod tests {
 
         // startswith: platform starts with prefix
         assert_eq!(
-            consider_sys_platform(&parse_expr("sys.platform.startswith('lin')"), &linux_options),
+            consider_sys_platform(
+                &parse_expr("sys.platform.startswith('lin')"),
+                &linux_options
+            ),
             TruthValue::AlwaysTrue
         );
 
         // startswith: platform doesn't start with prefix
         assert_eq!(
-            consider_sys_platform(&parse_expr("sys.platform.startswith('win')"), &linux_options),
+            consider_sys_platform(
+                &parse_expr("sys.platform.startswith('win')"),
+                &linux_options
+            ),
             TruthValue::AlwaysFalse
         );
 
         // startswith: exact match
         assert_eq!(
-            consider_sys_platform(&parse_expr("sys.platform.startswith('linux')"), &linux_options),
+            consider_sys_platform(
+                &parse_expr("sys.platform.startswith('linux')"),
+                &linux_options
+            ),
             TruthValue::AlwaysTrue
         );
 
         // startswith on win32 platform
         assert_eq!(
-            consider_sys_platform(&parse_expr("sys.platform.startswith('win')"), &win32_options),
+            consider_sys_platform(
+                &parse_expr("sys.platform.startswith('win')"),
+                &win32_options
+            ),
             TruthValue::AlwaysTrue
         );
     }

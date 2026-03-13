@@ -4,16 +4,18 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::Result;
-use ruff_python_ast::{self as ast, AnyParameterRef, Number, PySourceType, StmtFunctionDef};
 use ruff_python_ast::token::{TokenKind, Tokens};
+use ruff_python_ast::{self as ast, AnyParameterRef, Number, PySourceType, StmtFunctionDef};
 use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
 use ruff_source_file::LineIndex;
 use ruff_text_size::{Ranged, TextRange};
 
 use crate::func_effect_visitor;
 use crate::options::Options;
-use crate::reachability::{assert_will_always_fail, infer_condition_value, infer_pattern_value, TruthValue};
 use crate::reachability::TruthValue::AlwaysTrue;
+use crate::reachability::{
+    TruthValue, assert_will_always_fail, infer_condition_value, infer_pattern_value,
+};
 use crate::type_comment;
 use crate::type_comment::parse_func_type_comment;
 
@@ -176,7 +178,15 @@ pub(crate) fn serialize_python_file(
     file_path: &Path,
     skip_function_bodies: bool,
     options: Options,
-) -> Result<(Vec<u8>, Vec<SyntaxError>, Vec<(usize, Vec<String>)>, Vec<(usize, Vec<String>)>, Vec<u8>, bool, bool)> {
+) -> Result<(
+    Vec<u8>,
+    Vec<SyntaxError>,
+    Vec<(usize, Vec<String>)>,
+    Vec<(usize, Vec<String>)>,
+    Vec<u8>,
+    bool,
+    bool,
+)> {
     let source_type = PySourceType::from(file_path);
     let source_text = std::fs::read_to_string(file_path)?;
     let line_index = LineIndex::from_source_text(&source_text);
@@ -229,16 +239,15 @@ pub(crate) fn serialize_python_file(
                 let joined = codes.join(", ");
                 let error = format!(
                     "Type ignore with error code is not supported for modules; \
-                    use `# mypy: disable-error-code=\"{}\"`", joined
+                    use `# mypy: disable-error-code=\"{}\"`",
+                    joined
                 );
-                syntax_errors.push(
-                    SyntaxError {
-                        line: first_line,
-                        column: 0,
-                        message: error,
-                        blocker: false,
-                    }
-                )
+                syntax_errors.push(SyntaxError {
+                    line: first_line,
+                    column: 0,
+                    message: error,
+                    blocker: false,
+                })
             }
         }
     }
@@ -286,15 +295,23 @@ pub(crate) fn serialize_python_file(
 
     syntax_errors.extend(ser.extra_errors);
     // Skip type ignores on unreachable lines, so that they are not flagged as unused.
-    type_ignore_lines.retain(|(line, _)| {!ser.skipped_lines.contains(line)});
-    mypy_ignore_lines.retain(|(line, _)| {!ser.skipped_lines.contains(line)});
-    Ok((ser.bytes, syntax_errors, type_ignore_lines, mypy_ignore_lines, import_bytes, is_partial_package, ser.uses_template_strings))
+    type_ignore_lines.retain(|(line, _)| !ser.skipped_lines.contains(line));
+    mypy_ignore_lines.retain(|(line, _)| !ser.skipped_lines.contains(line));
+    Ok((
+        ser.bytes,
+        syntax_errors,
+        type_ignore_lines,
+        mypy_ignore_lines,
+        import_bytes,
+        is_partial_package,
+        ser.uses_template_strings,
+    ))
 }
 
 // Bit flags for import statement metadata
-const IMPORT_FLAG_TOP_LEVEL: u8 = 1 << 0;    // true if import is not within a function
-const IMPORT_FLAG_UNREACHABLE: u8 = 1 << 1;  // true if import is in unreachable code
-const IMPORT_FLAG_MYPY_ONLY: u8 = 1 << 2;    // true if import is mypy-only (e.g., in TYPE_CHECKING block)
+const IMPORT_FLAG_TOP_LEVEL: u8 = 1 << 0; // true if import is not within a function
+const IMPORT_FLAG_UNREACHABLE: u8 = 1 << 1; // true if import is in unreachable code
+const IMPORT_FLAG_MYPY_ONLY: u8 = 1 << 2; // true if import is mypy-only (e.g., in TYPE_CHECKING block)
 
 // Used to report which imports are used in a file
 enum ImportStatement {
@@ -310,7 +327,7 @@ enum ImportStatement {
         relative: i32,  // Number of dots in relative import
         names: Vec<(String, Option<String>)>, // List of (name, as_name) tuples
         range: TextRange, // Source range of the entire import statement
-        flags: u8,       // Bitfield of IMPORT_FLAG_* constants
+        flags: u8,      // Bitfield of IMPORT_FLAG_* constants
     },
     ImportAll {
         module: String,   // Module being imported from (empty string for "from . import *")
@@ -322,16 +339,16 @@ enum ImportStatement {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ParsedTypeComment {
-    Regular(ast::Expr),  // Comment like `# type: int`
-    Function(Vec<ast::Expr>, ast::Expr),  // Comment like `# type: (int, str) -> None`
-    Invalid(String),  // Error message for invalid type comment
+    Regular(ast::Expr),                  // Comment like `# type: int`
+    Function(Vec<ast::Expr>, ast::Expr), // Comment like `# type: (int, str) -> None`
+    Invalid(String),                     // Error message for invalid type comment
 }
 
 struct Serializer<'a> {
     bytes: Vec<u8>,
     imports: Vec<ImportStatement>, // Encountered import statements
     line_index: LineIndex,
-    tokens: Option<&'a Tokens>,  // All tokens (not set when serializing imports, and in tests)
+    tokens: Option<&'a Tokens>, // All tokens (not set when serializing imports, and in tests)
     text: &'a str,
     skip_function_bodies: bool, // Whether to omit function bodies without visible effects
     in_class: bool,             // Whether we're currently inside a class definition
@@ -339,14 +356,14 @@ struct Serializer<'a> {
     is_all_ascii: bool,         // Whether the entire file contains only ASCII characters
     lines_with_non_ascii: Vec<bool>, // Per-line flags: true if line has non-ASCII (empty if is_all_ascii)
     type_comments: HashMap<usize, ParsedTypeComment>, // Type comments by line number (1-indexed)
-    options: Options,           // Reachability analysis options
-    current_unreachable: bool,  // Whether we're currently in an unreachable block
-    current_mypy_only: bool,    // Whether we're currently in a mypy-only block (e.g., if TYPE_CHECKING)
-    top_level_getattr: bool,    // Does module have top-level __getattr__() function
-    is_evaluated: bool,         // Current type is evaluated at runtime (or is it a type comment/string)
-    extra_errors: Vec<SyntaxError>,  // Additional errors found while processing parsed tree
-    skipped_lines: HashSet<usize>,   // Lines of blocks that were found unreachable
-    uses_template_strings: bool,     // Whether parsed file uses t-strings
+    options: Options,                // Reachability analysis options
+    current_unreachable: bool,       // Whether we're currently in an unreachable block
+    current_mypy_only: bool, // Whether we're currently in a mypy-only block (e.g., if TYPE_CHECKING)
+    top_level_getattr: bool, // Does module have top-level __getattr__() function
+    is_evaluated: bool, // Current type is evaluated at runtime (or is it a type comment/string)
+    extra_errors: Vec<SyntaxError>, // Additional errors found while processing parsed tree
+    skipped_lines: HashSet<usize>, // Lines of blocks that were found unreachable
+    uses_template_strings: bool, // Whether parsed file uses t-strings
 }
 
 impl<'a> Serializer<'a> {
@@ -504,15 +521,19 @@ impl<'a> Serializer<'a> {
         self.write_usize(block.len());
         self.write_bool(self.current_unreachable);
         if !block.is_empty() && self.current_unreachable {
-            let st_loc = self.line_index.line_column(block.first().unwrap().start(), self.text);
+            let st_loc = self
+                .line_index
+                .line_column(block.first().unwrap().start(), self.text);
             let st_line = st_loc.line.get();
-            let end_loc = self.line_index.line_column(block.last().unwrap().end(), self.text);
+            let end_loc = self
+                .line_index
+                .line_column(block.last().unwrap().end(), self.text);
             let end_line = end_loc.line.get();
             for line in st_line..end_line + 1 {
                 self.skipped_lines.insert(line);
             }
         }
-        if block.is_empty() && fallback_range.is_some(){
+        if block.is_empty() && fallback_range.is_some() {
             // Body was not generated (likely due to a syntax error), but
             // deserializer expects location for empty bodies.
             self.write_location(fallback_range.unwrap())
@@ -537,14 +558,12 @@ impl<'a> Serializer<'a> {
         let st_line = st_loc.line.get();
         let st_column_bytes = st_loc.column.get();
         let st_column = self.convert_column_to_codepoint(st_loc.line.get(), st_column_bytes);
-        self.extra_errors.push(
-            SyntaxError {
-                line: st_line,
-                column: st_column - 1,  // convert to 0-based
-                message: error,
-                blocker,
-            }
-        );
+        self.extra_errors.push(SyntaxError {
+            line: st_line,
+            column: st_column - 1, // convert to 0-based
+            message: error,
+            blocker,
+        });
     }
 }
 
@@ -593,7 +612,7 @@ impl Ser for ast::Mod {
                     // This mimics behaviour of old parser; we strip everything
                     // after a top-level assert that is always false.
                     if assert_will_always_fail(stmt, &ser.options) {
-                        break
+                        break;
                     }
                 }
                 ser.write_tagged_int(body.len() as i64);
@@ -608,11 +627,7 @@ impl Ser for ast::Mod {
     }
 }
 
-fn first_statement_line(
-    tree: &ast::Mod,
-    source: &str,
-    line_index: &LineIndex,
-) -> usize {
+fn first_statement_line(tree: &ast::Mod, source: &str, line_index: &LineIndex) -> usize {
     match tree {
         ast::Mod::Module(m) => {
             if m.body.is_empty() {
@@ -648,7 +663,11 @@ fn extract_type_comments_and_ignores(
     tokens: &Tokens,
     source: &str,
     line_index: &LineIndex,
-) -> (Vec<(usize, Vec<String>)>, Vec<(usize, Vec<String>)>, HashMap<usize, ParsedTypeComment>) {
+) -> (
+    Vec<(usize, Vec<String>)>,
+    Vec<(usize, Vec<String>)>,
+    HashMap<usize, ParsedTypeComment>,
+) {
     let mut type_ignore_lines = Vec::new();
     let mut mypy_ignore_lines = Vec::new();
     let mut type_comments = HashMap::new();
@@ -676,26 +695,37 @@ fn extract_type_comments_and_ignores(
                             if parse_result.errors().is_empty() {
                                 if let ast::Mod::Expression(expr_mod) = parse_result.into_syntax() {
                                     type_comments.insert(
-                                        line_number, ParsedTypeComment::Regular(*expr_mod.body)
+                                        line_number,
+                                        ParsedTypeComment::Regular(*expr_mod.body),
                                     );
                                 }
                             } else {
                                 // If parsing as regular type failed, try parsing it as a function type comment.
-                                let as_function_comment = parse_func_type_comment(annotation.as_str());
+                                let as_function_comment =
+                                    parse_func_type_comment(annotation.as_str());
                                 if let Some((arg_types, ret_type)) = as_function_comment {
-                                    let parsed_function_comment = function_comment_to_expr(arg_types, ret_type);
-                                    if let Some((parsed_arg_types, parsed_ret_type)) = parsed_function_comment {
+                                    let parsed_function_comment =
+                                        function_comment_to_expr(arg_types, ret_type);
+                                    if let Some((parsed_arg_types, parsed_ret_type)) =
+                                        parsed_function_comment
+                                    {
                                         type_comments.insert(
-                                            line_number, ParsedTypeComment::Function(parsed_arg_types, parsed_ret_type)
+                                            line_number,
+                                            ParsedTypeComment::Function(
+                                                parsed_arg_types,
+                                                parsed_ret_type,
+                                            ),
                                         );
                                         continue;
                                     }
                                 }
                                 // If nothing worked (but we know it is a `# type:` comment), record an error.
                                 type_comments.insert(
-                                    line_number, ParsedTypeComment::Invalid(
-                                        format!("Syntax error in type comment \"{annotation}\"").to_string()
-                                    )
+                                    line_number,
+                                    ParsedTypeComment::Invalid(
+                                        format!("Syntax error in type comment \"{annotation}\"")
+                                            .to_string(),
+                                    ),
                                 );
                             }
                         }
@@ -715,8 +745,7 @@ fn function_comment_to_expr(
     let mut parsed_arg_types = Vec::with_capacity(arg_types.len());
     for arg_type in arg_types {
         let wrapped = format!("({})", arg_type);
-        let parse_result =
-            parse_unchecked(&wrapped, ParseOptions::from(Mode::Expression));
+        let parse_result = parse_unchecked(&wrapped, ParseOptions::from(Mode::Expression));
         if parse_result.errors().is_empty() {
             if let ast::Mod::Expression(expr_mod) = parse_result.into_syntax() {
                 parsed_arg_types.push(*expr_mod.body);
@@ -726,8 +755,7 @@ fn function_comment_to_expr(
         }
     }
     let wrapped = format!("({})", ret_type);
-    let parse_result =
-        parse_unchecked(&wrapped, ParseOptions::from(Mode::Expression));
+    let parse_result = parse_unchecked(&wrapped, ParseOptions::from(Mode::Expression));
     if parse_result.errors().is_empty() {
         if let ast::Mod::Expression(expr_mod) = parse_result.into_syntax() {
             return Some((parsed_arg_types, *expr_mod.body));
@@ -800,7 +828,9 @@ fn argument_elide_name(name: &str) -> bool {
 }
 
 fn serialize_parameters(
-    ser: &mut Serializer, params: &ast::Parameters, arg_comments: Vec<Option<ast::Expr>>,
+    ser: &mut Serializer,
+    params: &ast::Parameters,
+    arg_comments: Vec<Option<ast::Expr>>,
 ) {
     // Count total number of arguments
     let mut arg_count = 0;
@@ -852,7 +882,13 @@ fn serialize_parameters(
     // Serialize *args
     if let Some(vararg) = &params.vararg {
         serialize_argument(
-            ser, vararg, &arg_comments[idx], None, ARG_STAR, ARG_STAR, false
+            ser,
+            vararg,
+            &arg_comments[idx],
+            None,
+            ARG_STAR,
+            ARG_STAR,
+            false,
         );
         idx += 1;
     }
@@ -874,7 +910,13 @@ fn serialize_parameters(
     // Serialize **kwargs
     if let Some(kwarg) = &params.kwarg {
         serialize_argument(
-            ser, kwarg, &arg_comments[idx], None, ARG_STAR2, ARG_STAR2, false
+            ser,
+            kwarg,
+            &arg_comments[idx],
+            None,
+            ARG_STAR2,
+            ARG_STAR2,
+            false,
         );
     }
 }
@@ -1054,9 +1096,13 @@ fn find_func_type_comment(
             break;
         }
         if token == TokenKind::Comment {
-            let location = ser.line_index.line_column(tokens_before[idx].start(), ser.text);
+            let location = ser
+                .line_index
+                .line_column(tokens_before[idx].start(), ser.text);
             let line_number = location.line.get();
-            if let Some(ParsedTypeComment::Function(args, ret)) = ser.type_comments.get(&line_number) {
+            if let Some(ParsedTypeComment::Function(args, ret)) =
+                ser.type_comments.get(&line_number)
+            {
                 ret_type = Some(ret.clone());
                 if args.len() == 1 {
                     if let Some(ast::Expr::EllipsisLiteral(_)) = args.get(0) {
@@ -1074,8 +1120,7 @@ fn find_func_type_comment(
                         arg_types[idx] = Some(args[idx - 1].clone());
                     }
                 } else {
-                    let err =
-                    if args.len() > func.parameters.len() {
+                    let err = if args.len() > func.parameters.len() {
                         "Type signature has too many parameters"
                     } else {
                         "Type signature has too few parameters"
@@ -1216,7 +1261,7 @@ impl Ser for ast::Stmt {
                 if let Some(ret) = &f.returns {
                     ser.write_bool(true); // No return annotation
                     serialize_type(ser, ret);
-                } else if ret_comment.is_some(){
+                } else if ret_comment.is_some() {
                     ser.write_bool(true);
                     let mut ret_comment = ret_comment.unwrap();
                     ast::relocate::relocate_expr(&mut ret_comment, f.range());
@@ -1285,7 +1330,7 @@ impl Ser for ast::Stmt {
                     ser.is_evaluated = false;
                     serialize_type(ser, &type_expr);
                     ser.is_evaluated = was_evaluated;
-                } else if let Some(ParsedTypeComment::Invalid(error)) = type_expr{
+                } else if let Some(ParsedTypeComment::Invalid(error)) = type_expr {
                     ser.add_error(error, a.range(), false);
                     ser.write_bool(true);
                     serialize_invalid_type(ser);
@@ -1695,9 +1740,7 @@ impl Ser for ast::Stmt {
                     let mut analyzer = IfReachabilityAnalyzer::new(&ser.options);
                     let mut flags = Vec::with_capacity(m.cases.len());
                     for case in &m.cases {
-                        flags.push(
-                            analyzer.match_case_flags(&case.pattern, case.guard.as_ref())
-                        )
+                        flags.push(analyzer.match_case_flags(&case.pattern, case.guard.as_ref()))
                     }
                     flags
                 };
@@ -1707,8 +1750,9 @@ impl Ser for ast::Stmt {
                 // Write number of cases
                 ser.write_tagged_int(m.cases.len() as i64);
                 // Serialize each case
-                for (case, (case_unreachable, case_mypy_only))
-                in m.cases.iter().zip(flags.iter().copied()) {
+                for (case, (case_unreachable, case_mypy_only)) in
+                    m.cases.iter().zip(flags.iter().copied())
+                {
                     // Serialize pattern
                     case.pattern.serialize(ser);
                     // Serialize optional guard
@@ -1788,8 +1832,7 @@ impl<'a> IfReachabilityAnalyzer<'a> {
         let truth = infer_condition_value(expr, &self.options);
 
         let unreachable = self.tail_unreachable || is_always_or_mypy_false(truth);
-        let mypy_only =
-            !unreachable && !self.seen_mypy_true && truth == TruthValue::MypyTrue;
+        let mypy_only = !unreachable && !self.seen_mypy_true && truth == TruthValue::MypyTrue;
 
         self.tail_unreachable = self.tail_unreachable || is_always_or_mypy_true(truth);
         self.seen_mypy_true = self.seen_mypy_true || truth == TruthValue::MypyTrue;
@@ -1806,19 +1849,26 @@ impl<'a> IfReachabilityAnalyzer<'a> {
     }
 
     /// Similar to condition_flags() but for match statement cases.
-    fn match_case_flags(&mut self, pattern: &ast::Pattern, guard: Option<&Box<ast::Expr>>) -> (bool, bool) {
+    fn match_case_flags(
+        &mut self,
+        pattern: &ast::Pattern,
+        guard: Option<&Box<ast::Expr>>,
+    ) -> (bool, bool) {
         let pattern_truth = infer_pattern_value(pattern);
         let mut guard_truth = AlwaysTrue;
         if guard.is_some() {
             guard_truth = infer_condition_value(guard.as_ref().unwrap(), &self.options);
         }
         let unreachable = self.tail_unreachable
-            || is_always_or_mypy_false(pattern_truth) || is_always_or_mypy_false(guard_truth);
+            || is_always_or_mypy_false(pattern_truth)
+            || is_always_or_mypy_false(guard_truth);
         // Since patterns can never be MypyTrue, there is some asymmetry that only guard decides
         // mypy_only status, and a case cannot be mypy_only because we have seen mypy_false before.
         // This mimics the logic in old mypy parser.
-        let mypy_only = !unreachable && !self.seen_mypy_true
-            && guard_truth == TruthValue::MypyTrue && is_always_or_mypy_true(pattern_truth);
+        let mypy_only = !unreachable
+            && !self.seen_mypy_true
+            && guard_truth == TruthValue::MypyTrue
+            && is_always_or_mypy_true(pattern_truth);
         self.tail_unreachable = self.tail_unreachable
             || is_always_or_mypy_true(guard_truth) && is_always_or_mypy_true(pattern_truth);
         self.seen_mypy_true = self.seen_mypy_true
@@ -1874,19 +1924,18 @@ fn serialize_if_stmt(ser: &mut Serializer, stmt: &ast::StmtIf) {
 
     // Serialize main body with analyzer-provided flags.
     let (main_body_unreachable, main_body_mypy_only) = main_flags;
-    with_branch_flags(
-        ser,
-        main_body_unreachable,
-        main_body_mypy_only,
-        |ser| ser.serialize_block(&stmt.body, Some(stmt.range())),
-    );
+    with_branch_flags(ser, main_body_unreachable, main_body_mypy_only, |ser| {
+        ser.serialize_block(&stmt.body, Some(stmt.range()))
+    });
 
     let num_elif = stmt.elif_else_clauses.len() - if has_else { 1 } else { 0 };
     ser.write_tagged_int(num_elif as i64);
 
     // Process elif/else clauses
-    for (clause, (branch_unreachable, branch_mypy_only)) in
-        stmt.elif_else_clauses.iter().zip(clause_flags.iter().copied())
+    for (clause, (branch_unreachable, branch_mypy_only)) in stmt
+        .elif_else_clauses
+        .iter()
+        .zip(clause_flags.iter().copied())
     {
         match &clause.test {
             Some(expr) => {
@@ -2326,7 +2375,10 @@ impl Ser for ast::Expr {
                             // what other parsers do (including Python, ruff, and mypy old parser).
                             if let Some(format_spec) = &tstring_part.format_spec {
                                 ser.write_bool(true);
-                                serialize_fstring_elements(ser, format_spec.elements.iter().collect());
+                                serialize_fstring_elements(
+                                    ser,
+                                    format_spec.elements.iter().collect(),
+                                );
                                 ser.write_location(format_spec.range());
                             } else {
                                 ser.write_bool(false);
@@ -2625,8 +2677,7 @@ fn serialize_type(ser: &mut Serializer, t: &ast::Expr) {
                 for item in &e.items {
                     serialize_type(ser, &item.value);
                 }
-            }
-            else {
+            } else {
                 serialize_invalid_type(ser);
             }
         }
@@ -2990,9 +3041,19 @@ fn extract_int_literal_value(expr: &ast::Expr) -> Option<i64> {
 
 /// Build import flags from current serializer state
 fn make_import_flags(ser: &Serializer) -> u8 {
-    (if !ser.in_function { IMPORT_FLAG_TOP_LEVEL } else { 0 })
-        | (if ser.current_unreachable { IMPORT_FLAG_UNREACHABLE } else { 0 })
-        | (if ser.current_mypy_only { IMPORT_FLAG_MYPY_ONLY } else { 0 })
+    (if !ser.in_function {
+        IMPORT_FLAG_TOP_LEVEL
+    } else {
+        0
+    }) | (if ser.current_unreachable {
+        IMPORT_FLAG_UNREACHABLE
+    } else {
+        0
+    }) | (if ser.current_mypy_only {
+        IMPORT_FLAG_MYPY_ONLY
+    } else {
+        0
+    })
 }
 
 /// Serialize a list of import statements to bytes.
@@ -3470,15 +3531,15 @@ mod tests {
             b'o',
             b's',
             TAG_LITERAL_INT,
-            int_val(0), // relative = 0
+            int_val(0),        // relative = 0
             TAG_LITERAL_FALSE, // no as_name
             TAG_LOCATION,
-            int_val(1), // start line 1
-            int_val(0), // start column 0 (0-based)
-            int_val(0), // line difference (same line)
-            int_val(9), // column difference (9 chars)
+            int_val(1),      // start line 1
+            int_val(0),      // start column 0 (0-based)
+            int_val(0),      // line difference (same line)
+            int_val(9),      // column difference (9 chars)
             TAG_LITERAL_INT, // flags tag
-            int_val(1), // flags: IMPORT_FLAG_TOP_LEVEL (bit 0 set)
+            int_val(1),      // flags: IMPORT_FLAG_TOP_LEVEL (bit 0 set)
         ];
 
         assert_eq!(bytes, expected);
