@@ -40,7 +40,7 @@ use ruff_python_ast::{self as ast, visitor::Visitor};
 /// def compute():
 ///     return 42
 /// ```
-pub fn is_trivial_body(body: &[ast::Stmt]) -> bool {
+pub(crate) fn is_trivial_body(body: &[ast::Stmt]) -> bool {
     if body.is_empty() {
         return false;
     }
@@ -112,7 +112,7 @@ pub fn is_trivial_body(body: &[ast::Stmt]) -> bool {
 /// def baz(self):
 ///     local_var = 1
 /// ```
-pub fn has_externally_visible_effect(
+pub(crate) fn has_externally_visible_effect(
     body: &[ast::Stmt],
     parameters: &ast::Parameters,
     check_attributes: bool,

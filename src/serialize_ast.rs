@@ -314,7 +314,7 @@ const IMPORT_FLAG_UNREACHABLE: u8 = 1 << 1; // true if import is in unreachable 
 const IMPORT_FLAG_MYPY_ONLY: u8 = 1 << 2; // true if import is mypy-only (e.g., in TYPE_CHECKING block)
 
 // Used to report which imports are used in a file
-enum ImportStatement {
+pub(crate) enum ImportStatement {
     Import {
         name: String,
         relative: i32,           // Number of dots in relative import 'import ..x'
@@ -3069,7 +3069,7 @@ fn make_import_flags(ser: &Serializer) -> u8 {
 /// # Returns
 ///
 /// Serialized bytes representing the imports
-pub fn serialize_imports(
+pub(crate) fn serialize_imports(
     imports: &[ImportStatement],
     text: &str,
     line_index: Option<LineIndex>,
