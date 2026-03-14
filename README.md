@@ -13,7 +13,7 @@ Prerequisites:
 - Recent Rust toolchain
 - Python 3.10+ (3.13t or 3.14t for free-threaded builds)
 - [maturin](https://github.com/PyO3/maturin): `pip install maturin`
-- Access to [mypy new-parser branch](https://github.com/python/mypy/tree/new-parser) for testing
+- Checkout of [mypy repo](https://github.com/python/mypy) for testing
 
 Development build (fast compilation, unoptimized):
 ```bash
