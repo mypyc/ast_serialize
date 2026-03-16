@@ -80,12 +80,13 @@ in PATH.
 4. Wait until all [builds](https://github.com/mypyc/ast_serialize/actions) complete successfully
    (no release is triggered yet).
 5. Once builds are complete, tag the release (`git tag vX.Y.Z`; `git push origin vX.Y.Z`).
-8. Go to the ["Actions" tab](https://github.com/mypyc/ast_serialize/actions) and click "Build wheels"
+6. Go to the ["Actions" tab](https://github.com/mypyc/ast_serialize/actions) and click "Build wheels"
    on the left.
-9. Click "Run workflow" and pick the newly created tag from the drop-down list. This will build
+7. Click "Run workflow" and pick the newly created tag from the drop-down list. This will build
    *and upload* the wheels.
-10. After the workflow completes, verify that `pip install -U ast-serialize` installs the new version from PyPI.
-11. Create a PR to update the `ast-serialize` version in `pyproject.toml` in the mypy repository.
+8. After the workflow completes, verify that `pip install -U ast-serialize` installs the new version
+   from PyPI using a compiled wheel.
+9. Create a PR to update the `ast-serialize` version in `pyproject.toml` in the mypy repository.
 
 The process should take about 15 minutes.
 
