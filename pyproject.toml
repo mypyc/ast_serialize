@@ -4,10 +4,37 @@ build-backend = "maturin"
 
 [project]
 name = "ast_serialize"
-version = "0.1.0"
+version = "0.1.1"
 description = "Python bindings for mypy AST serialization"
+readme = {text = """
+ast_serialize - Python Parser and AST Serializer
+================================================
+
+This is a fast Python extension for parsing Python files and serializing the AST using
+the native binary format used by mypy. This will eventually replace the current mypy parser,
+which uses the Python stdlib ``ast`` module for parsing.
+""", content-type = "text/x-rst"}
+authors = [{name = "Jukka Lehtosalo", email = "jukka.lehtosalo@iki.fi"}]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Software Development",
+  "Typing :: Typed",
+]
 requires-python = ">=3.7"
 license = "MIT"
+
+[project.urls]
+Homepage = "https://github.com/mypyc/ast_serialize"
+Issues = "https://github.com/mypyc/ast_serialize/issues"
 
 [tool.maturin]
 bindings = "pyo3"
