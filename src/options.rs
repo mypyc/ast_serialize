@@ -4,6 +4,7 @@ pub(crate) struct Options {
     platform: String,
     always_true: Vec<String>,
     always_false: Vec<String>,
+    cache_version: u32,
 }
 
 impl Default for Options {
@@ -13,6 +14,8 @@ impl Default for Options {
             platform: String::from("linux"),
             always_true: Vec::new(),
             always_false: Vec::new(),
+            // Always set to latest supported version.
+            cache_version: 1,
         }
     }
 }
@@ -23,12 +26,14 @@ impl Options {
         platform: String,
         always_true: Vec<String>,
         always_false: Vec<String>,
+        cache_version: u32,
     ) -> Self {
         Self {
             python_version,
             platform,
             always_true,
             always_false,
+            cache_version,
         }
     }
 
@@ -46,5 +51,9 @@ impl Options {
 
     pub(crate) fn always_false(&self) -> &[String] {
         &self.always_false
+    }
+
+    pub(crate) fn cache_version(&self) -> u32 {
+        self.cache_version
     }
 }

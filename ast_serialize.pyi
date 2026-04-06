@@ -27,5 +27,6 @@ def parse(
     platform: str | None = None,
     always_true: list[str] | None = None,
     always_false: list[str] | None = None,
+    cache_version: int = 0,
 ) -> tuple[bytes, list[ParseError], _TypeIgnores, bytes, _ASTData]:
     ...

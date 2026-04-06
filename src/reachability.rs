@@ -534,7 +534,7 @@ mod tests {
             panic!("Expected expression");
         };
 
-        let options = Options::new((3, 10), String::from("linux"), Vec::new(), Vec::new());
+        let options = Options::new((3, 10), String::from("linux"), Vec::new(), Vec::new(), 0);
         infer_condition_value(&expr_mod.body, &options)
     }
 
@@ -557,6 +557,7 @@ mod tests {
                 String::from("linux"),
                 always_true.to_vec(),
                 always_false.to_vec(),
+                0,
             );
             infer_condition_value(&expr_mod.body, &options)
         };
@@ -610,6 +611,7 @@ mod tests {
                 String::from("linux"),
                 always_true.to_vec(),
                 always_false.to_vec(),
+                0,
             );
             infer_condition_value(&expr_mod.body, &options)
         };
@@ -730,7 +732,7 @@ mod tests {
     #[test]
     fn test_consider_sys_version_info() {
         use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
-        let options = Options::new((3, 10), String::from("linux"), Vec::new(), Vec::new());
+        let options = Options::new((3, 10), String::from("linux"), Vec::new(), Vec::new(), 0);
 
         let parse_expr = |code: &str| {
             let parsed = parse_unchecked(code, ParseOptions::from(Mode::Expression));
@@ -975,8 +977,8 @@ mod tests {
     #[test]
     fn test_consider_sys_platform() {
         use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
-        let linux_options = Options::new((3, 10), String::from("linux"), Vec::new(), Vec::new());
-        let win32_options = Options::new((3, 10), String::from("win32"), Vec::new(), Vec::new());
+        let linux_options = Options::new((3, 10), String::from("linux"), Vec::new(), Vec::new(), 0);
+        let win32_options = Options::new((3, 10), String::from("win32"), Vec::new(), Vec::new(), 0);
 
         let parse_expr = |code: &str| {
             let parsed = parse_unchecked(code, ParseOptions::from(Mode::Expression));

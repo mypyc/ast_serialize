@@ -39,7 +39,8 @@ pub mod type_comment;
     python_version=None,
     platform=None,
     always_true=None,
-    always_false=None
+    always_false=None,
+    cache_version=0
 ))]
 fn parse(
     py: Python,
@@ -50,6 +51,7 @@ fn parse(
     platform: Option<String>,
     always_true: Option<Vec<String>>,
     always_false: Option<Vec<String>>,
+    cache_version: u32,
 ) -> PyResult<(Vec<u8>, Vec<Py<PyAny>>, Vec<Py<PyAny>>, Vec<u8>, Py<PyAny>)> {
     // Get defaults from Python if not provided
     let python_version = match python_version {
@@ -85,7 +87,13 @@ fn parse(
             serialize_ast::serialize_python_file(
                 path,
                 skip_function_bodies,
-                options::Options::new(python_version, platform, always_true, always_false),
+                options::Options::new(
+                    python_version,
+                    platform,
+                    always_true,
+                    always_false,
+                    cache_version,
+                ),
             )
         })
         .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;

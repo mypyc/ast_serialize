@@ -1661,6 +1661,9 @@ impl Ser for ast::Stmt {
                             if let Some(name) = &h.name {
                                 ser.write_bool(true);
                                 ser.write_bytes(name.as_bytes());
+                                if ser.options.cache_version() >= 1 {
+                                    ser.write_location(name.range());
+                                }
                             } else {
                                 ser.write_bool(false);
                             }
