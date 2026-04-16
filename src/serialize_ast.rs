@@ -3729,17 +3729,68 @@ mod tests {
         assert_eq!(comments, vec![]);
     }
 
+    /// Write source to a temporary .py file and return its path.
+    /// The file is named using `label` and a timestamp to avoid collisions.
+    fn write_temp_py(label: &str, source: &str) -> std::path::PathBuf {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("{label}_{ts}.py"));
+        std::fs::write(&path, source).unwrap();
+        path
+    }
+
+    #[test]
+    fn test_inline_always_true_affects_serialization() {
+        // Verify that "# mypy: always-true=FLAG" in the source has the same
+        // effect on serialization as passing always_true=["FLAG"] via options.
+        let source_with_comment = indoc::indoc! {"
+            # mypy: always-true=FLAG
+            if FLAG:
+                import a
+            else:
+                import b
+        "};
+        // Same structure but with a plain comment so line numbers match.
+        let source_without_comment = indoc::indoc! {"
+            # just a regular comment
+            if FLAG:
+                import a
+            else:
+                import b
+        "};
+        let path1 = write_temp_py("test_inline_at_1", source_with_comment);
+        let path2 = write_temp_py("test_inline_at_2", source_without_comment);
+
+        // Parse with inline comment, no caller-provided always_true
+        let result_inline =
+            serialize_python_file(&path1, false, Options::default()).unwrap();
+        // Parse without comment, but pass always_true via options
+        let options_with_flag = Options::new(
+            (3, 12),
+            "linux".to_string(),
+            vec!["FLAG".to_string()],
+            vec![],
+            1,
+        );
+        let result_option =
+            serialize_python_file(&path2, false, options_with_flag).unwrap();
+
+        let _ = std::fs::remove_file(&path1);
+        let _ = std::fs::remove_file(&path2);
+
+        // The AST bytes should be identical — the inline comment had the
+        // same effect as the caller-provided option.
+        assert_eq!(result_inline.0, result_option.0, "AST bytes differ");
+        // Import bytes should also match (same unreachability flags).
+        assert_eq!(result_inline.4, result_option.4, "import bytes differ");
+    }
+
     #[test]
     fn test_source_hash() {
         let source = "x = 1\n";
-        let path = std::env::temp_dir().join(format!(
-            "test_source_hash_{}.py",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        std::fs::write(&path, source).unwrap();
+        let path = write_temp_py("test_source_hash", source);
         let result = serialize_python_file(&path, false, Options::default()).unwrap();
         let _ = std::fs::remove_file(&path);
         let hash_hex = &result.7;
