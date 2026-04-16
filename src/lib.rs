@@ -82,6 +82,7 @@ fn parse(
         import_bytes,
         is_partial_package,
         uses_template_strings,
+        source_hash,
     ) = py
         .detach(|| {
             serialize_ast::serialize_python_file(
@@ -123,6 +124,7 @@ fn parse(
     ast_data.set_item("is_partial_package", is_partial_package)?;
     ast_data.set_item("mypy_ignores", py_mypy_ignores)?;
     ast_data.set_item("uses_template_strings", uses_template_strings)?;
+    ast_data.set_item("source_hash", source_hash)?;
     let ast_data = ast_data.into();
 
     Ok((

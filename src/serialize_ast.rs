@@ -1,9 +1,11 @@
 //! Serialize the AST for a given Python file as a mypy AST
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write;
 use std::path::Path;
 
 use anyhow::Result;
+use sha1::{Digest, Sha1};
 use ruff_python_ast::token::{TokenKind, Tokens};
 use ruff_python_ast::{self as ast, AnyParameterRef, Number, PySourceType, StmtFunctionDef};
 use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
@@ -186,9 +188,20 @@ pub(crate) fn serialize_python_file(
     Vec<u8>,
     bool,
     bool,
+    String,
 )> {
     let source_type = PySourceType::from(file_path);
     let source_text = std::fs::read_to_string(file_path)?;
+
+    // Compute SHA1 hash of the source text (same as mypy's compute_hash)
+    let hash_hex = {
+        let hash = Sha1::digest(source_text.as_bytes());
+        let mut hex = String::with_capacity(40);
+        for byte in hash {
+            write!(hex, "{byte:02x}").unwrap();
+        }
+        hex
+    };
     let line_index = LineIndex::from_source_text(&source_text);
     let is_stub_package = match file_path.file_name() {
         Some(file) => file.as_encoded_bytes() == b"__init__.pyi",
@@ -305,6 +318,7 @@ pub(crate) fn serialize_python_file(
         import_bytes,
         is_partial_package,
         ser.uses_template_strings,
+        hash_hex,
     ))
 }
 
@@ -3546,5 +3560,22 @@ mod tests {
         ];
 
         assert_eq!(bytes, expected);
+    }
+
+    #[test]
+    fn test_source_hash() {
+        let source = "x = 1\n";
+        let path = std::env::temp_dir().join(format!(
+            "test_source_hash_{}.py",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, source).unwrap();
+        let result = serialize_python_file(&path, false, Options::default()).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let hash_hex = &result.7;
+        assert_eq!(hash_hex, "e139f73e34322031189110afc1939eb1877a8954");
     }
 }

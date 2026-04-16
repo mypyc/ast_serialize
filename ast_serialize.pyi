@@ -18,6 +18,7 @@ class _ASTData(TypedDict):
     is_partial_package: bool
     uses_template_strings: bool
     mypy_ignores: _TypeIgnores
+    source_hash: str
 
 def parse(
     fnam: str,

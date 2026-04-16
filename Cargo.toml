@@ -26,6 +26,9 @@ ruff_text_size = { git = "https://github.com/astral-sh/ruff", tag = "0.15.5" }
 # Error handling
 anyhow = "1.0"
 
+# Hashing
+sha1 = "0.10"
+
 [dev-dependencies]
 indoc = "2"
 
