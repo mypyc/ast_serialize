@@ -68,7 +68,9 @@ pub(crate) fn parse_single_mypy_comment(text: &str) -> InlineConfigOverrides {
                 }
             }
             "ignore_errors" => {
-                result.ignore_errors = Some(parse_bool(&value));
+                if let Some(b) = parse_bool(&value) {
+                    result.ignore_errors = Some(b);
+                }
             }
             _ => {}
         }
@@ -131,11 +133,13 @@ fn split_commas(s: &str) -> Vec<String> {
 }
 
 /// Parse a boolean value the way configparser does.
-fn parse_bool(s: &str) -> bool {
-    matches!(
-        s.to_lowercase().as_str(),
-        "1" | "yes" | "true" | "on"
-    )
+/// Returns None for values not recognized by configparser.
+fn parse_bool(s: &str) -> Option<bool> {
+    match s.to_lowercase().as_str() {
+        "1" | "yes" | "true" | "on" => Some(true),
+        "0" | "no" | "false" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -262,8 +266,18 @@ mod tests {
             Some(false)
         );
         assert_eq!(
+            parse_single_mypy_comment("ignore-errors=off").ignore_errors,
+            Some(false)
+        );
+        assert_eq!(
             parse_single_mypy_comment("ignore-errors=false").ignore_errors,
             Some(false)
+        );
+        // Unrecognized values are ignored (None), matching configparser
+        // which would raise ValueError — Python side handles the error.
+        assert_eq!(
+            parse_single_mypy_comment("ignore-errors=maybe").ignore_errors,
+            None
         );
     }
 
