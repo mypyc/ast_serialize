@@ -56,4 +56,12 @@ impl Options {
     pub(crate) fn cache_version(&self) -> u32 {
         self.cache_version
     }
+
+    pub(crate) fn extend_always_true(&mut self, names: Vec<String>) {
+        self.always_true.extend(names);
+    }
+
+    pub(crate) fn extend_always_false(&mut self, names: Vec<String>) {
+        self.always_false.extend(names);
+    }
 }

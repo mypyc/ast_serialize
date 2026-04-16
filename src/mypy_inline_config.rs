@@ -27,6 +27,15 @@ impl InlineConfigOverrides {
     }
 }
 
+/// Process all `# mypy:` comments and return combined overrides.
+pub(crate) fn resolve_overrides(comments: &[(usize, String)]) -> InlineConfigOverrides {
+    let mut result = InlineConfigOverrides::default();
+    for (_, text) in comments {
+        result.merge(parse_single_mypy_comment(text));
+    }
+    result
+}
+
 /// Parse a single `# mypy:` comment text (the part after `# mypy:`) and extract
 /// overrides for options that affect parsing.
 ///

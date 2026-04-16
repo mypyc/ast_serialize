@@ -178,8 +178,8 @@ const LONG_INT_TRAILER: u8 = 15;
 /// Returns an error if the file cannot be read (but not for syntax errors, which are returned in the tuple)
 pub(crate) fn serialize_python_file(
     file_path: &Path,
-    skip_function_bodies: bool,
-    options: Options,
+    mut skip_function_bodies: bool,
+    mut options: Options,
 ) -> Result<(
     Vec<u8>,
     Vec<SyntaxError>,
@@ -239,6 +239,17 @@ pub(crate) fn serialize_python_file(
     // Extract both type: ignore comments and type annotation comments in a single pass
     let (mut type_ignore_lines, mut mypy_ignore_lines, type_comments, mypy_comments) =
         extract_type_comments_and_ignores(parsed.tokens(), &source_text, &line_index);
+
+    // Apply inline config overrides that affect parsing/serialization.
+    let inline_overrides = crate::mypy_inline_config::resolve_overrides(&mypy_comments);
+    options.extend_always_true(inline_overrides.always_true);
+    options.extend_always_false(inline_overrides.always_false);
+    // Inline ignore-errors can only enable body skipping, not disable it,
+    // since the caller may have set skip_function_bodies based on other
+    // context (e.g. ignore_all from config file section matching).
+    if inline_overrides.ignore_errors == Some(true) {
+        skip_function_bodies = true;
+    }
 
     let mut top_unreachable = false;
     let first_ignore = type_ignore_lines.get(0).cloned();
