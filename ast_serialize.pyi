@@ -19,6 +19,7 @@ class _ASTData(TypedDict):
     uses_template_strings: bool
     mypy_ignores: _TypeIgnores
     source_hash: str
+    mypy_comments: list[tuple[int, str]]
 
 def parse(
     fnam: str,

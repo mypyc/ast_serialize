@@ -189,6 +189,7 @@ pub(crate) fn serialize_python_file(
     bool,
     bool,
     String,
+    Vec<(usize, String)>,
 )> {
     let source_type = PySourceType::from(file_path);
     let source_text = std::fs::read_to_string(file_path)?;
@@ -236,7 +237,7 @@ pub(crate) fn serialize_python_file(
         .collect();
 
     // Extract both type: ignore comments and type annotation comments in a single pass
-    let (mut type_ignore_lines, mut mypy_ignore_lines, type_comments) =
+    let (mut type_ignore_lines, mut mypy_ignore_lines, type_comments, mypy_comments) =
         extract_type_comments_and_ignores(parsed.tokens(), &source_text, &line_index);
 
     let mut top_unreachable = false;
@@ -319,6 +320,7 @@ pub(crate) fn serialize_python_file(
         is_partial_package,
         ser.uses_template_strings,
         hash_hex,
+        mypy_comments,
     ))
 }
 
@@ -681,16 +683,35 @@ fn extract_type_comments_and_ignores(
     Vec<(usize, Vec<String>)>,
     Vec<(usize, Vec<String>)>,
     HashMap<usize, ParsedTypeComment>,
+    Vec<(usize, String)>,
 ) {
     let mut type_ignore_lines = Vec::new();
     let mut mypy_ignore_lines = Vec::new();
     let mut type_comments = HashMap::new();
+    let mut mypy_comments = Vec::new();
 
     for token in tokens.iter() {
         if token.kind().is_comment() {
             let comment_text = &source[token.range()];
             let location = line_index.line_column(token.start(), source);
             let line_number = location.line.get();
+
+            // Check for "# mypy: " inline configuration comments at start of line.
+            // Skip "# mypy: ignore" / "# mypy: ignore[...]" which are already
+            // collected in mypy_ignore_lines.
+            if location.column.get() == 1 {
+                if let Some(after_mypy) = comment_text.strip_prefix("# mypy:") {
+                    let trimmed = after_mypy.trim();
+                    if !trimmed.is_empty() {
+                        let is_ignore = trimmed == "ignore"
+                            || trimmed.starts_with("ignore[")
+                            || trimmed.starts_with("ignore ");
+                        if !is_ignore {
+                            mypy_comments.push((line_number, trimmed.to_string()));
+                        }
+                    }
+                }
+            }
 
             if let Some(parts) = type_comment::parse_type_comments(comment_text) {
                 for part in parts {
@@ -749,7 +770,7 @@ fn extract_type_comments_and_ignores(
         }
     }
 
-    (type_ignore_lines, mypy_ignore_lines, type_comments)
+    (type_ignore_lines, mypy_ignore_lines, type_comments, mypy_comments)
 }
 
 fn function_comment_to_expr(
@@ -3601,6 +3622,100 @@ mod tests {
         ];
 
         assert_eq!(bytes, expected);
+    }
+
+    fn extract_mypy_comments(source: &str) -> Vec<(usize, String)> {
+        let parsed = parse_unchecked(source, ParseOptions::from(PySourceType::Python));
+        let line_index = LineIndex::from_source_text(source);
+        let (_, _, _, mypy_comments) =
+            extract_type_comments_and_ignores(parsed.tokens(), source, &line_index);
+        mypy_comments
+    }
+
+    #[test]
+    fn test_mypy_comment_config_override() {
+        let source = indoc::indoc! {"
+            # mypy: disallow-untyped-defs
+            x = 1
+        "};
+        let comments = extract_mypy_comments(source);
+        assert_eq!(comments, vec![(1, "disallow-untyped-defs".to_string())]);
+    }
+
+    #[test]
+    fn test_mypy_comment_multiple() {
+        let source = indoc::indoc! {"
+            # mypy: disallow-untyped-defs
+            x = 1
+            # mypy: warn-return-any
+        "};
+        let comments = extract_mypy_comments(source);
+        assert_eq!(
+            comments,
+            vec![
+                (1, "disallow-untyped-defs".to_string()),
+                (3, "warn-return-any".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_mypy_comment_not_at_start_of_line() {
+        // Inline mypy comments after code should not be picked up
+        let source = "x = 1  # mypy: disallow-untyped-defs\n";
+        let comments = extract_mypy_comments(source);
+        assert_eq!(comments, vec![]);
+    }
+
+    #[test]
+    fn test_mypy_comment_indented() {
+        // Indented mypy comments should not be picked up
+        let source = indoc::indoc! {"
+            if True:
+                # mypy: disallow-untyped-defs
+                pass
+        "};
+        let comments = extract_mypy_comments(source);
+        assert_eq!(comments, vec![]);
+    }
+
+    #[test]
+    fn test_mypy_comment_ignore_not_included() {
+        // "# mypy: ignore" is handled separately via mypy_ignore_lines
+        let source = "# mypy: ignore[attr-defined]\n";
+        let comments = extract_mypy_comments(source);
+        assert_eq!(comments, vec![]);
+
+        let source = "# mypy: ignore\n";
+        let comments = extract_mypy_comments(source);
+        assert_eq!(comments, vec![]);
+
+        // Extra whitespace around "ignore"
+        let source = "# mypy:  ignore \n";
+        let comments = extract_mypy_comments(source);
+        assert_eq!(comments, vec![]);
+
+        let source = "# mypy:   ignore[arg-type]  \n";
+        let comments = extract_mypy_comments(source);
+        assert_eq!(comments, vec![]);
+    }
+
+    #[test]
+    fn test_mypy_comment_ignore_prefix_config() {
+        // Config options starting with "ignore" should not be filtered out
+        let source = "# mypy: ignore-missing-imports\n";
+        let comments = extract_mypy_comments(source);
+        assert_eq!(
+            comments,
+            vec![(1, "ignore-missing-imports".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_mypy_comment_none() {
+        let source = "x = 1\n";
+        let comments = extract_mypy_comments(source);
+        assert_eq!(comments, vec![]);
     }
 
     #[test]
