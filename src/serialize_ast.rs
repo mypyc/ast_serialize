@@ -781,7 +781,12 @@ fn extract_type_comments_and_ignores(
         }
     }
 
-    (type_ignore_lines, mypy_ignore_lines, type_comments, mypy_comments)
+    (
+        type_ignore_lines,
+        mypy_ignore_lines,
+        type_comments,
+        mypy_comments,
+    )
 }
 
 fn function_comment_to_expr(
@@ -3716,10 +3721,7 @@ mod tests {
         // Config options starting with "ignore" should not be filtered out
         let source = "# mypy: ignore-missing-imports\n";
         let comments = extract_mypy_comments(source);
-        assert_eq!(
-            comments,
-            vec![(1, "ignore-missing-imports".to_string())]
-        );
+        assert_eq!(comments, vec![(1, "ignore-missing-imports".to_string())]);
     }
 
     #[test]
@@ -3764,8 +3766,7 @@ mod tests {
         let path2 = write_temp_py("test_inline_at_2", source_without_comment);
 
         // Parse with inline comment, no caller-provided always_true
-        let result_inline =
-            serialize_python_file(&path1, false, Options::default()).unwrap();
+        let result_inline = serialize_python_file(&path1, false, Options::default()).unwrap();
         // Parse without comment, but pass always_true via options
         let options_with_flag = Options::new(
             (3, 12),
@@ -3774,8 +3775,7 @@ mod tests {
             vec![],
             1,
         );
-        let result_option =
-            serialize_python_file(&path2, false, options_with_flag).unwrap();
+        let result_option = serialize_python_file(&path2, false, options_with_flag).unwrap();
 
         let _ = std::fs::remove_file(&path1);
         let _ = std::fs::remove_file(&path2);
