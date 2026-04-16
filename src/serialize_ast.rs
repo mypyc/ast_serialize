@@ -5,12 +5,12 @@ use std::fmt::Write;
 use std::path::Path;
 
 use anyhow::Result;
-use sha1::{Digest, Sha1};
 use ruff_python_ast::token::{TokenKind, Tokens};
 use ruff_python_ast::{self as ast, AnyParameterRef, Number, PySourceType, StmtFunctionDef};
 use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
 use ruff_source_file::LineIndex;
 use ruff_text_size::{Ranged, TextRange};
+use sha1::{Digest, Sha1};
 
 use crate::func_effect_visitor;
 use crate::options::Options;
