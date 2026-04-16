@@ -4,6 +4,7 @@ use pyo3::types::{PyDict, PyTuple};
 use std::path::Path;
 
 mod func_effect_visitor;
+mod mypy_inline_config;
 mod options;
 pub mod reachability;
 mod serialize_ast;
