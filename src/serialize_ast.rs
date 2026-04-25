@@ -1369,9 +1369,16 @@ impl Ser for ast::Stmt {
                 // Check if there's a type comment on the same line as this assignment
                 let location = ser.line_index.line_column(a.start(), ser.text);
                 let line_number = location.line.get();
+                let end_location = ser.line_index.line_column(a.end(), ser.text);
+                let end_line_number = end_location.line.get();
 
+                // Allow type comment on last line to match common use case with old parser.
                 // Clone the type expression to avoid borrow checker issues
-                let type_expr = ser.type_comments.get(&line_number).cloned();
+                let type_expr = ser
+                    .type_comments
+                    .get(&line_number)
+                    .or(ser.type_comments.get(&end_line_number))
+                    .cloned();
 
                 if let Some(ParsedTypeComment::Regular(mut type_expr)) = type_expr {
                     // Has type annotation from type comment
