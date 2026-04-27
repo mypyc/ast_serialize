@@ -547,9 +547,7 @@ impl<'a> Serializer<'a> {
         let st_line = st_loc.line.get();
         let end_loc = self.line_index.line_column(to.end(), self.text);
         let end_line = end_loc.line.get();
-        for line in st_line..end_line + 1 {
-            self.skipped_lines.insert(line);
-        }
+        self.skipped_lines.extend(st_line..end_line + 1);
     }
 
     // fallback_range = None means deserializer can handle situations when this block is empty.
