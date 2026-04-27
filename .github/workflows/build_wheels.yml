@@ -125,6 +125,7 @@ jobs:
         if: ${{ matrix.platform.python_arch == 'arm64' }}
         run: |
           $ErrorActionPreference = 'Stop'
+          remove-item C:\hostedtoolcache\windows\Python\3.13.13 -recurse
           nuget install pythonarm64-freethreaded -Version 3.14.4 -OutputDirectory $env:RUNNER_TEMP\py -ExcludeVersion
           $tools = "$env:RUNNER_TEMP\py\pythonarm64-freethreaded\tools"
           "$tools" >> $env:GITHUB_PATH
