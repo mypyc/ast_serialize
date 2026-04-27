@@ -6,7 +6,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use ruff_python_ast::token::{TokenKind, Tokens};
-use ruff_python_ast::{self as ast, AnyParameterRef, Number, PySourceType, StmtFunctionDef};
+use ruff_python_ast::{self as ast, AnyParameterRef, Number, PySourceType, Stmt, StmtFunctionDef};
 use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
 use ruff_source_file::LineIndex;
 use ruff_text_size::{Ranged, TextRange};
@@ -541,24 +541,25 @@ impl<'a> Serializer<'a> {
         }
     }
 
+    /// Mark all statements between `from` and `to` (inclusive) as skipped.
+    fn skip_lines(&mut self, from: &Stmt, to: &Stmt) {
+        let st_loc = self.line_index.line_column(from.start(), self.text);
+        let st_line = st_loc.line.get();
+        let end_loc = self.line_index.line_column(to.end(), self.text);
+        let end_line = end_loc.line.get();
+        for line in st_line..end_line + 1 {
+            self.skipped_lines.insert(line);
+        }
+    }
+
     // fallback_range = None means deserializer can handle situations when this block is empty.
-    fn serialize_block(&mut self, block: &Vec<ast::Stmt>, fallback_range: Option<TextRange>) {
+    fn serialize_block(&mut self, block: &Vec<Stmt>, fallback_range: Option<TextRange>) {
         self.write_tag(TAG_BLOCK);
         self.write_tag(TAG_LIST_GEN);
         self.write_usize(block.len());
         self.write_bool(self.current_unreachable);
         if !block.is_empty() && self.current_unreachable {
-            let st_loc = self
-                .line_index
-                .line_column(block.first().unwrap().start(), self.text);
-            let st_line = st_loc.line.get();
-            let end_loc = self
-                .line_index
-                .line_column(block.last().unwrap().end(), self.text);
-            let end_line = end_loc.line.get();
-            for line in st_line..end_line + 1 {
-                self.skipped_lines.insert(line);
-            }
+            self.skip_lines(block.first().unwrap(), block.last().unwrap());
         }
         if block.is_empty() && fallback_range.is_some() {
             // Body was not generated (likely due to a syntax error), but
@@ -634,11 +635,14 @@ impl Ser for ast::Mod {
         match self {
             ast::Mod::Module(m) => {
                 let mut body = Vec::new();
-                for stmt in &m.body {
+                for (i, stmt) in m.body.iter().enumerate() {
                     body.push(stmt);
                     // This mimics behaviour of old parser; we strip everything
                     // after a top-level assert that is always false.
                     if assert_will_always_fail(stmt, &ser.options) {
+                        if i < m.body.len() - 1 {
+                            ser.skip_lines(&m.body[i + 1], m.body.last().unwrap());
+                        }
                         break;
                     }
                 }
