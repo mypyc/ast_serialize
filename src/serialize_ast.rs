@@ -6,7 +6,7 @@ use std::path::Path;
 
 use anyhow::Result;
 use ruff_python_ast::token::{TokenKind, Tokens};
-use ruff_python_ast::{self as ast, AnyParameterRef, Number, PySourceType, Stmt, StmtFunctionDef};
+use ruff_python_ast::{self as ast, AnyParameterRef, Number, PySourceType, StmtFunctionDef};
 use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
 use ruff_source_file::LineIndex;
 use ruff_text_size::{Ranged, TextRange};
@@ -542,7 +542,7 @@ impl<'a> Serializer<'a> {
     }
 
     /// Mark all statements between `from` and `to` (inclusive) as skipped.
-    fn skip_lines(&mut self, from: &Stmt, to: &Stmt) {
+    fn skip_lines(&mut self, from: &ast::Stmt, to: &ast::Stmt) {
         let st_loc = self.line_index.line_column(from.start(), self.text);
         let st_line = st_loc.line.get();
         let end_loc = self.line_index.line_column(to.end(), self.text);
@@ -551,7 +551,7 @@ impl<'a> Serializer<'a> {
     }
 
     // fallback_range = None means deserializer can handle situations when this block is empty.
-    fn serialize_block(&mut self, block: &Vec<Stmt>, fallback_range: Option<TextRange>) {
+    fn serialize_block(&mut self, block: &Vec<ast::Stmt>, fallback_range: Option<TextRange>) {
         self.write_tag(TAG_BLOCK);
         self.write_tag(TAG_LIST_GEN);
         self.write_usize(block.len());
