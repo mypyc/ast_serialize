@@ -121,10 +121,26 @@ jobs:
           target: ${{ matrix.platform.target }}
           args: --release --out dist
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+      # Use NuGet on windows-arm64 until actions/setup-python/#1307 is fixed.
       - uses: actions/setup-python@v6
+        if: ${{ matrix.architecture != 'arm64' }}
         with:
           python-version: 3.14t
           architecture: ${{ matrix.platform.python_arch }}
+
+      - uses: NuGet/setup-nuget@v4
+        if: ${{ matrix.architecture == 'arm64' }}
+      - shell: pwsh
+        if: ${{ matrix.architecture == 'arm64' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          nuget install pythonarm64-freethreaded -Version 3.14t -OutputDirectory $env:RUNNER_TEMP\py -ExcludeVersion
+          $tools = "$env:RUNNER_TEMP\py\pythonarm64-freethreaded\tools"
+          "$tools" >> $env:GITHUB_PATH
+          "$tools\Scripts" >> $env:GITHUB_PATH
+          & "$tools\python.exe" -m ensurepip --upgrade
+
       - name: Build free-threaded wheels
         uses: PyO3/maturin-action@v1
         with:
