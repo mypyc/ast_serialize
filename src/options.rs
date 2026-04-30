@@ -20,6 +20,13 @@ impl Default for Options {
     }
 }
 
+// Add location range to except handlers, available in v0.1.2.
+pub(crate) const CV_HANDLER_LOCATIONS: u32 = 1;
+// Add error notes to RawExpressionTypes, available in v0.2.0.
+pub(crate) const CV_RAW_EXPRESSION_TYPE_NOTES: u32 = 2;
+// Write import flags in full serialized tree as well, available in v0.3.0.
+pub(crate) const CV_IMPORT_FLAGS: u32 = 3;
+
 impl Options {
     pub(crate) fn new(
         python_version: (u32, u32),

@@ -13,7 +13,9 @@ use ruff_text_size::{Ranged, TextRange};
 use sha1::{Digest, Sha1};
 
 use crate::func_effect_visitor;
-use crate::options::Options;
+use crate::options::{
+    CV_HANDLER_LOCATIONS, CV_IMPORT_FLAGS, CV_RAW_EXPRESSION_TYPE_NOTES, Options,
+};
 use crate::reachability::TruthValue::AlwaysTrue;
 use crate::reachability::{
     TruthValue, assert_will_always_fail, infer_condition_value, infer_pattern_value,
@@ -1438,6 +1440,7 @@ impl Ser for ast::Stmt {
                 ser.write_location(a.range());
             }
             ast::Stmt::Import(i) => {
+                let flags = make_import_flags(ser);
                 ser.write_tag(TAG_IMPORT);
                 // Write number of imports
                 ser.write_tagged_int(i.names.len() as i64);
@@ -1456,12 +1459,16 @@ impl Ser for ast::Stmt {
                         relative: 0, // Not a relative import
                         as_name: name.asname.as_ref().map(|n| n.to_string()),
                         range: name.range,
-                        flags: make_import_flags(ser),
+                        flags,
                     });
                 }
                 ser.write_location(i.range());
+                if ser.options.cache_version() >= CV_IMPORT_FLAGS {
+                    ser.write_tagged_int(flags as i64);
+                }
             }
             ast::Stmt::ImportFrom(ifrom) => {
+                let flags = make_import_flags(ser);
                 // Check if this is a wildcard import (from m import *)
                 if ifrom.names.len() == 1 && ifrom.names[0].name.as_str() == "*" {
                     // Serialize as ImportAll
@@ -1474,6 +1481,9 @@ impl Ser for ast::Stmt {
                     ser.write_tagged_int(ifrom.level as i64);
 
                     ser.write_location(ifrom.range());
+                    if ser.options.cache_version() >= CV_IMPORT_FLAGS {
+                        ser.write_tagged_int(flags as i64);
+                    }
 
                     // Track in imports list for dependency tracking
                     ser.imports.push(ImportStatement::ImportAll {
@@ -1483,7 +1493,7 @@ impl Ser for ast::Stmt {
                             .map_or(String::new(), |m| m.to_string()),
                         relative: ifrom.level as i32,
                         range: ifrom.range(),
-                        flags: make_import_flags(ser),
+                        flags,
                     });
                 } else {
                     // Regular from...import statement
@@ -1527,10 +1537,13 @@ impl Ser for ast::Stmt {
                         relative: ifrom.level as i32,
                         names,
                         range: ifrom.range(),
-                        flags: make_import_flags(ser),
+                        flags,
                     });
 
                     ser.write_location(ifrom.range());
+                    if ser.options.cache_version() >= CV_IMPORT_FLAGS {
+                        ser.write_tagged_int(flags as i64);
+                    }
                 }
             }
             ast::Stmt::Return(s) => {
@@ -1721,7 +1734,7 @@ impl Ser for ast::Stmt {
                             if let Some(name) = &h.name {
                                 ser.write_bool(true);
                                 ser.write_bytes(name.as_bytes());
-                                if ser.options.cache_version() >= 1 {
+                                if ser.options.cache_version() >= CV_HANDLER_LOCATIONS {
                                     ser.write_location(name.range());
                                 }
                             } else {
@@ -2668,7 +2681,7 @@ fn serialize_invalid_type(ser: &mut Serializer, note: Option<&[u8]>) {
     ser.write_tag(TAG_RAW_EXPRESSION_TYPE);
     ser.write_bytes(b"typing.Any");
     ser.write_tag(TAG_LITERAL_NONE);
-    if ser.options.cache_version() >= 2 {
+    if ser.options.cache_version() >= CV_RAW_EXPRESSION_TYPE_NOTES {
         if let Some(note) = note {
             ser.write_bytes(note);
         } else {
