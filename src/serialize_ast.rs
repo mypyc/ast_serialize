@@ -2581,7 +2581,17 @@ impl Ser for ast::Pattern {
 }
 
 fn serialize_fstring_elements(ser: &mut Serializer, elems: Vec<&ast::InterpolatedStringElement>) {
-    ser.write_tagged_int(elems.len() as i64);
+    // Debug items like {var=} need two elements per item: literal for expression
+    // and actual interpolation item.
+    let mut extra = 0;
+    for elem in &elems {
+        if let ast::InterpolatedStringElement::Interpolation(interp) = elem {
+            if interp.debug_text.is_some() {
+                extra += 1;
+            }
+        }
+    }
+    ser.write_tagged_int(elems.len() as i64 + extra);
     for elem in elems {
         match elem {
             ast::InterpolatedStringElement::Literal(lit) => {
@@ -2589,9 +2599,33 @@ fn serialize_fstring_elements(ser: &mut Serializer, elems: Vec<&ast::Interpolate
                 ser.write_location(lit.range());
             }
             ast::InterpolatedStringElement::Interpolation(interp) => {
+                // Ruff parser doesn't have any handling of debug f-strings, unlike Python parser,
+                // so we (roughly) mimic the behavior of the latter, see _PyPegen_interpolation().
+                // For full 1:1 correspondence, the deserializer needs to collapse consecutive
+                // literal parts, e.g. f"test {x=}" -> "".join("test x=", "{!r:{}}".format(x)).
+                let mut use_r = false;
+                if let Some(debug_text) = &interp.debug_text {
+                    let range = interp.expression.range();
+                    let text = String::from(&debug_text.leading)
+                        + &ser.text[range]
+                        + debug_text.trailing.as_str();
+                    ser.write_bytes(text.as_bytes());
+                    ser.write_location(range);
+                    // This logic mimics _get_interpolation_conversion() in Python parser: only
+                    // auto-apply `!r` conversion in debug item if there is no format specifier.
+                    if interp.conversion == ast::ConversionFlag::None
+                        && interp.format_spec.is_none()
+                    {
+                        use_r = true;
+                    }
+                }
                 ser.write_tag(TAG_FSTRING_INTERPOLATION);
                 interp.expression.serialize(ser);
-                match interp.conversion {
+                let mut conversion = interp.conversion;
+                if use_r {
+                    conversion = ast::ConversionFlag::Repr;
+                }
+                match conversion {
                     ast::ConversionFlag::None => {
                         ser.write_bool(false);
                     }
