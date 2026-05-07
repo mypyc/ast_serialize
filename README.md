@@ -74,7 +74,7 @@ in PATH.
 
 ## Making a release
 
-1. Bump the version number in `pyproject.toml` in this repository.
+1. Bump the version number in `pyproject.toml` and `Cargo.toml` in this repository.
 2. Update `test_ast_serialize.py` (optional but recommended if the release includes major features).
 3. Commit and push (pushing directly to master is fine).
 4. Wait until all [builds](https://github.com/mypyc/ast_serialize/actions) complete successfully
