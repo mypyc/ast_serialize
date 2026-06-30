@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "ast_serialize"
-version = "0.5.0"
+version = "0.6.0"
 description = "Python bindings for mypy AST serialization"
 readme = {text = """
 ast_serialize - Python Parser and AST Serializer
