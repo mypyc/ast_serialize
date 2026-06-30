@@ -241,7 +241,7 @@ jobs:
 
   release:
     if: ${{ github.event_name == 'workflow_dispatch' && github.ref_type == 'tag' }}
-    needs: [linux, musllinux, windows, macos, sdist]
+    needs: [linux, musllinux, windows, macos, emscripten, sdist]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
