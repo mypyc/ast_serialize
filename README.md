@@ -90,6 +90,18 @@ in PATH.
 
 The process should take about 15 minutes.
 
+## Vendored Ruff crates
+
+To facilitate packaging/distributing `ast_serialize` we vendor Ruff crates that are necessary for
+Ruff parser. They are located in `crates/` directory, and their shared config is in `[workspace]`
+section of `Cargo.toml`. Note we include a minimal required subset of Ruff (and thus only a subset
+of its third party dependencies). The process of updating the Ruff crates is following:
+
+1. Clone [Ruff repo](https://github.com/astral-sh/ruff) and checkout the desired tag.
+2. Copy all Ruff crates specified in our `Cargo.toml`.
+3. Copy versions of all `[workspace.dependencies]` from Ruff.
+4. If new third party dependencies are added to Ruff, copy them until `cargo test` passes.
+
 ## Using Coding Agents
 
 This project is designed to support coding agent assisted development (such as Claude Code, Codex
