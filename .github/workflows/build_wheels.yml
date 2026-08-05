@@ -79,6 +79,10 @@ jobs:
             target: aarch64
           - runner: ubuntu-22.04
             target: armv7
+          - runner: ubuntu-22.04
+            target: ppc64le
+          - runner: ubuntu-24.04
+            target: riscv64
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
