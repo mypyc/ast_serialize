@@ -212,7 +212,7 @@ jobs:
         with:
           version: ${{ steps.pyodide-config.outputs.emscripten-version }}
           no-cache: true
-      - name: Build CPython 3.14 wheel
+      - name: Build abi3 wheel
         uses: PyO3/maturin-action@v1
         env:
           CARGO_TARGET_WASM32_UNKNOWN_EMSCRIPTEN_RUSTFLAGS: ${{ steps.pyodide-config.outputs.rustflags }}
