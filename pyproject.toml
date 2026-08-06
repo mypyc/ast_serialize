@@ -32,6 +32,7 @@ classifiers = [
 ]
 requires-python = ">=3.7"
 license = "MIT"
+license-files = ["LICENSE", "crates/LICENSE"]
 
 [project.urls]
 Homepage = "https://github.com/mypyc/ast_serialize"
