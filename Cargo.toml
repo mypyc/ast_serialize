@@ -103,7 +103,7 @@ unexpected_cfgs = { level = "warn", check-cfg = [
 [dependencies]
 # PyO3 for Python bindings
 # Base features always enabled; abi3-py39 is added via stable-abi feature
-pyo3 = { version = "0.29.1", features = ["extension-module"] }
+pyo3 = { version = "0.29.2", features = ["extension-module"] }
 
 # Ruff dependencies for parsing Python (vendored, see above).
 ruff_python_ast = { path = "crates/ruff_python_ast" }
