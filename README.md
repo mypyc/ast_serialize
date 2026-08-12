@@ -100,7 +100,8 @@ of its third party dependencies). The process of updating the Ruff crates is fol
 1. Clone [Ruff repo](https://github.com/astral-sh/ruff) and checkout the desired tag.
 2. Copy all Ruff crates specified in our `Cargo.toml`.
 3. Copy versions of all `[workspace.dependencies]` from Ruff.
-4. If new third party dependencies are added to Ruff, copy them until `cargo test` passes.
+4. Change the versions of the Ruff crates in their `Cargo.toml` files (eg. `crates/ruff_python_ast/Cargo.toml`) to this format: `<crate-ver>-ast-serialize.<ast-serialize-ver>`, eg. `0.0.0-ast-serialize.0.8.0`.
+5. If new third party dependencies are added to Ruff, copy them until `cargo test` passes.
 
 ## Using Coding Agents
 

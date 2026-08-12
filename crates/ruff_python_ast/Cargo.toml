@@ -1,6 +1,6 @@
 [package]
 name = "ruff_python_ast"
-version = "0.0.0"
+version = "0.0.0-ast-serialize.0.8.0"
 publish = false
 authors = { workspace = true }
 edition = { workspace = true }
