@@ -3599,9 +3599,35 @@ mod tests {
     }
 
     #[test]
+    fn test_syntax_error_empty_func_2() {
+        // Same as above, but after a valid function.
+        let text = "def ok():\n    pass\ndef hello()\n    pass\n";
+        let mut ser = make_ser(text);
+        let opt = ParseOptions::from(PySourceType::Python);
+        let parsed = parse_unchecked(text, opt);
+        let ast = parsed.syntax();
+
+        // Should not panic
+        ast.serialize(&mut ser);
+
+        // Syntax error is reported normally
+        assert!(ser.extra_errors.is_empty());
+    }
+
+    #[test]
     fn test_syntax_error_broken_args() {
         // Test that we do not panic on invalid function arguments.
         let source = "def f(x, (y, z)): pass\n";
+        let path = write_temp_py("test_source", source);
+        // Simply check that we do not panic
+        let _ = serialize_python_file(&path, None, false, Options::default()).unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_syntax_error_broken_args_2() {
+        // Same as above, but after a valid function.
+        let source = "def ok(x): pass\ndef f(x, (y, z)): pass\n";
         let path = write_temp_py("test_source", source);
         // Simply check that we do not panic
         let _ = serialize_python_file(&path, None, false, Options::default()).unwrap();
