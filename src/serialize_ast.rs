@@ -1169,13 +1169,16 @@ fn find_func_type_comment(
         return (arg_types, ret_type);
     }
     let first_stmt = func.body[0].start();
+    if ser.tokens.is_none() {
+        return (arg_types, ret_type);
+    }
     let tokens = ser.tokens.unwrap();
     let tokens_before = tokens.before(first_stmt);
     let mut idx = tokens_before.len() - 1;
     loop {
         // Look for function type comments between colon in `def foo(...):` anr first statement.
         let token = tokens_before[idx].kind();
-        if token == TokenKind::Colon {
+        if idx == 0 || token == TokenKind::Colon {
             break;
         }
         if token == TokenKind::Comment {
@@ -3577,6 +3580,58 @@ mod tests {
 
         assert!(ser.is_all_ascii);
         assert!(ser.lines_with_non_ascii.is_empty()); // No per-line tracking
+    }
+
+    #[test]
+    fn test_syntax_error_empty_func() {
+        // Test that we do not panic on invalid function definition.
+        let text = "def hello()\n    pass\n";
+        let mut ser = make_ser(text);
+        let opt = ParseOptions::from(PySourceType::Python);
+        let parsed = parse_unchecked(text, opt);
+        let ast = parsed.syntax();
+
+        // Should not panic
+        ast.serialize(&mut ser);
+
+        // Syntax error is reported normally
+        assert!(ser.extra_errors.is_empty());
+    }
+
+    #[test]
+    fn test_syntax_error_empty_func_2() {
+        // Same as above, but after a valid function.
+        let text = "def ok():\n    pass\ndef hello()\n    pass\n";
+        let mut ser = make_ser(text);
+        let opt = ParseOptions::from(PySourceType::Python);
+        let parsed = parse_unchecked(text, opt);
+        let ast = parsed.syntax();
+
+        // Should not panic
+        ast.serialize(&mut ser);
+
+        // Syntax error is reported normally
+        assert!(ser.extra_errors.is_empty());
+    }
+
+    #[test]
+    fn test_syntax_error_broken_args() {
+        // Test that we do not panic on invalid function arguments.
+        let source = "def f(x, (y, z)): pass\n";
+        let path = write_temp_py("test_source", source);
+        // Simply check that we do not panic
+        let _ = serialize_python_file(&path, None, false, Options::default()).unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_syntax_error_broken_args_2() {
+        // Same as above, but after a valid function.
+        let source = "def ok(x): pass\ndef f(x, (y, z)): pass\n";
+        let path = write_temp_py("test_source", source);
+        // Simply check that we do not panic
+        let _ = serialize_python_file(&path, None, false, Options::default()).unwrap();
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
