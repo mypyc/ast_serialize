@@ -26,6 +26,8 @@ pub(crate) const CV_HANDLER_LOCATIONS: u32 = 1;
 pub(crate) const CV_RAW_EXPRESSION_TYPE_NOTES: u32 = 2;
 // Write import flags in full serialized tree as well, available in v0.3.0.
 pub(crate) const CV_IMPORT_FLAGS: u32 = 3;
+// Handle optional keys in dictionary comprehensions (PEP 798).
+pub(crate) const CV_DICT_KEY_OPT: u32 = 4;
 
 impl Options {
     pub(crate) fn new(

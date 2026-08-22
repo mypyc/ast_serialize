@@ -13,14 +13,14 @@ name = "ast_serialize"
 crate-type = ["cdylib"]
 
 # A workspace for building vendored Ruff crates.
-# Note we copy workspace values from Ruff 0.15.12 verbatim.
+# Note we copy workspace values from Ruff 0.16.3 verbatim.
 [workspace]
 members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.93"
+rust-version = "1.95"
 homepage = "https://docs.astral.sh/ruff"
 documentation = "https://docs.astral.sh/ruff"
 repository = "https://github.com/astral-sh/ruff"
@@ -32,30 +32,34 @@ aho-corasick = { version = "1.1.3" }
 anstream = { version = "1.0.0" }
 anstyle = { version = "1.0.10" }
 anyhow = { version = "1.0.80" }
+arrayvec = { version = "0.7.6" }
 bitflags = { version = "2.5.0" }
 bstr = { version = "1.9.1" }
-compact_str = "0.9.0"
+char_str = { version = "0.0.2" }
+compact_str = "0.10.0"
 datatest-stable = { version = "0.3.3" }
+drop_bomb = { version = "0.1.5" }
 filetime = { version = "0.2.23" }
-get-size2 = { version = "0.8.0", features = [
+get-size2 = { version = "0.10.3", features = [
     "derive",
     "smallvec",
     "hashbrown",
     "compact-str",
-    "ordermap"
+    "ordermap",
+    "thin-vec",
 ] }
 glob = { version = "0.3.1" }
 globset = { version = "0.4.14" }
 heck = "0.5.0"
 insta = { version = "1.35.1" }
 is-macro = { version = "0.3.5" }
-itertools = { version = "0.14.0" }
+itertools = { version = "0.15.0" }
 memchr = { version = "2.7.1" }
 proc-macro2 = { version = "1.0.79" }
 quote = { version = "1.0.23" }
 regex = { version = "1.10.2" }
 rustc-hash = { version = "2.0.0" }
-salsa = { version="0.26.1", default-features = false, features = [
+salsa = { version = "0.28.2", default-features = false, features = [
     "compact_str",
     "macros",
     "salsa_unstable",
@@ -73,10 +77,9 @@ snapbox = { version = "1.0.0", features = [
     "examples",
 ] }
 static_assertions = "1.1.0"
-syn = { version = "2.0.55" }
+syn = { version = "3.0.0" }
+thin-vec = { version = "0.2.14" }
 thiserror = { version = "2.0.0" }
-toml = { version = "1.0.0" }
-tryfn = { version = "1.0.0" }
 unicode-ident = { version = "1.0.12" }
 unicode-normalization = { version = "0.1.23" }
 unicode-width = { version = "0.2.0" }
@@ -113,7 +116,8 @@ ruff_text_size = { path = "crates/ruff_text_size" }
 
 # Error handling
 anyhow = "1.0"
-
+# Vec types used by Ruff crates
+thin-vec = { version = "0.2.14" }
 # Hashing
 sha1 = "0.10"
 
