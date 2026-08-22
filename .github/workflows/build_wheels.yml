@@ -211,7 +211,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
-      - run: pip install pyodide-build==0.35.1
+      - run: pip install pyodide-build==0.39.0
       - id: pyodide-config
         run: |
           echo "rust-toolchain=$(pyodide config get rust_toolchain)" >> "$GITHUB_OUTPUT"
