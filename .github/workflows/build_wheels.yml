@@ -211,7 +211,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
-      - run: pip install pyodide-build==0.35.1
+      - run: pip install pyodide-build==0.39.0
       - id: pyodide-config
         run: |
           echo "rust-toolchain=$(pyodide config get rust_toolchain)" >> "$GITHUB_OUTPUT"
@@ -231,7 +231,8 @@ jobs:
         with:
           target: wasm32-unknown-emscripten
           args: --release --out dist -i python${{ matrix.python-version }} --no-default-features
-          rust-toolchain: ${{ steps.pyodide-config.outputs.rust-toolchain }}
+          # TODO: we manually force a slightly newer Rust version since Ruff requires it.
+          rust-toolchain: 1.95
           sccache: ${{ !startsWith(github.ref, 'refs/tags/') }}
       - name: Upload wheels
         uses: actions/upload-artifact@v5

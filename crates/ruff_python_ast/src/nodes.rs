@@ -2,8 +2,8 @@
 
 use crate::AtomicNodeIndex;
 use crate::generated::{
-    ExprBytesLiteral, ExprDict, ExprFString, ExprList, ExprName, ExprSet, ExprStringLiteral,
-    ExprTString, ExprTuple, PatternMatchAs, PatternMatchOr, StmtClassDef,
+    ExprBytesLiteral, ExprCall, ExprDict, ExprFString, ExprList, ExprName, ExprSet,
+    ExprStringLiteral, ExprTString, ExprTuple, PatternMatchAs, PatternMatchOr, StmtClassDef,
 };
 use std::borrow::Cow;
 use std::fmt;
@@ -14,6 +14,7 @@ use std::slice::{Iter, IterMut};
 use std::sync::OnceLock;
 
 use bitflags::bitflags;
+use thin_vec::ThinVec;
 
 use ruff_text_size::{Ranged, TextLen, TextRange, TextSize};
 
@@ -51,7 +52,7 @@ pub struct ElifElseClause {
     pub range: TextRange,
     pub node_index: AtomicNodeIndex,
     pub test: Option<Expr>,
-    pub body: Vec<Stmt>,
+    pub body: Suite,
 }
 
 impl Expr {
@@ -84,6 +85,17 @@ impl Expr {
         }
     }
 
+    /// Return the value expression after peeling off any nested named expressions.
+    ///
+    /// For example, this returns the `x` expression for both `x` and `(y := x)`.
+    pub fn expression_value(&self) -> &Self {
+        let mut expr = self;
+        while let Expr::Named(named) = expr {
+            expr = &named.value;
+        }
+        expr
+    }
+
     /// Return the [`OperatorPrecedence`] of this expression
     pub fn precedence(&self) -> OperatorPrecedence {
         OperatorPrecedence::from(self)
@@ -105,7 +117,7 @@ impl ExprRef<'_> {
     }
 
     pub fn precedence(&self) -> OperatorPrecedence {
-        OperatorPrecedence::from(self)
+        OperatorPrecedence::from(*self)
     }
 }
 
@@ -387,13 +399,71 @@ impl ConversionFlag {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// The debug text of a self-documenting f-string expression (e.g., `f"{x=}"`).
+///
+/// Stores the concatenation of leading text, expression source, and trailing text as a single
+/// [`CompactString`], with byte offsets to split them. The offsets are needed because the leading
+/// and trailing portions can contain non-whitespace characters (grouping parentheses, comments in
+/// triple-quoted f-strings) that cannot be distinguished from expression content by scanning.
+///
+/// [`CompactString`]: compact_str::CompactString
+#[derive(Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "get-size", derive(get_size2::GetSize))]
 pub struct DebugText {
+    /// The full text between the `{` and the conversion / `format_spec` / `}`.
+    text: compact_str::CompactString,
+    /// Byte offset where the expression source begins.
+    expression_start: u32,
+    /// Byte offset where the expression source ends.
+    expression_end: u32,
+}
+
+impl std::fmt::Debug for DebugText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DebugText")
+            .field("leading", &self.leading())
+            .field("expression", &self.expression())
+            .field("trailing", &self.trailing())
+            .finish()
+    }
+}
+
+impl DebugText {
+    pub fn new(leading: &str, expression: &str, trailing: &str) -> Self {
+        let expression_start = leading.text_len().to_u32();
+        let expression_end = expression_start + expression.text_len().to_u32();
+        let mut buf = compact_str::CompactString::with_capacity(
+            leading.len() + expression.len() + trailing.len(),
+        );
+        buf.push_str(leading);
+        buf.push_str(expression);
+        buf.push_str(trailing);
+        Self {
+            text: buf,
+            expression_start,
+            expression_end,
+        }
+    }
+
+    /// The full debug text between the `{` and the conversion / `format_spec` / `}`.
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
     /// The text between the `{` and the expression node.
-    pub leading: String,
-    /// The text between the expression and the conversion, the `format_spec`, or the `}`, depending on what's present in the source
-    pub trailing: String,
+    pub fn leading(&self) -> &str {
+        &self.text[..self.expression_start as usize]
+    }
+
+    /// The source text of the expression (e.g., `0x0` in `f"{0x0=}"`).
+    pub fn expression(&self) -> &str {
+        &self.text[self.expression_start as usize..self.expression_end as usize]
+    }
+
+    /// The text between the expression and the conversion, the `format_spec`, or the `}`.
+    pub fn trailing(&self) -> &str {
+        &self.text[self.expression_end as usize..]
+    }
 }
 
 impl ExprFString {
@@ -1258,6 +1328,28 @@ impl ExprStringLiteral {
     }
 }
 
+impl Ranged for ExprCall {
+    fn range(&self) -> TextRange {
+        TextRange::new(self.range_start, self.arguments.end())
+    }
+}
+
+#[expect(
+    clippy::missing_fields_in_debug,
+    reason = "`range_start` is represented by the reconstructed `range` field"
+)]
+impl fmt::Debug for ExprCall {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ExprCall")
+            .field("node_index", &self.node_index)
+            .field("range", &self.range())
+            .field("func", &self.func)
+            .field("arguments", &self.arguments)
+            .finish()
+    }
+}
+
 /// The value representing a [`ExprStringLiteral`].
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "get-size", derive(get_size2::GetSize))]
@@ -1298,10 +1390,10 @@ impl StringLiteralValue {
             "Use `StringLiteralValue::single` to create single-part strings"
         );
         Self {
-            inner: StringLiteralValueInner::Concatenated(ConcatenatedStringLiteral {
+            inner: StringLiteralValueInner::Concatenated(Box::new(ConcatenatedStringLiteral {
                 strings,
                 value: OnceLock::new(),
-            }),
+            })),
         }
     }
 
@@ -1424,7 +1516,7 @@ enum StringLiteralValueInner {
     Single(StringLiteral),
 
     /// An implicitly concatenated string literals i.e., `"foo" "bar"`.
-    Concatenated(ConcatenatedStringLiteral),
+    Concatenated(Box<ConcatenatedStringLiteral>),
 }
 
 bitflags! {
@@ -1552,6 +1644,11 @@ impl StringLiteralFlags {
     pub fn with_invalid(mut self) -> Self {
         self.0 |= StringLiteralFlagsInner::INVALID;
         self
+    }
+
+    /// Returns `true` if the parser deemed the string literal invalid.
+    pub const fn is_invalid(self) -> bool {
+        self.0.contains(StringLiteralFlagsInner::INVALID)
     }
 
     pub const fn prefix(self) -> StringLiteralPrefix {
@@ -1975,6 +2072,11 @@ impl BytesLiteralFlags {
         self
     }
 
+    /// Returns `true` if the parser deemed the bytes literal invalid.
+    pub const fn is_invalid(self) -> bool {
+        self.0.contains(BytesLiteralFlagsInner::INVALID)
+    }
+
     pub const fn prefix(self) -> ByteStringPrefix {
         if self.0.contains(BytesLiteralFlagsInner::R_PREFIX_LOWER) {
             debug_assert!(!self.0.contains(BytesLiteralFlagsInner::R_PREFIX_UPPER));
@@ -2064,6 +2166,16 @@ impl BytesLiteral {
             node_index: AtomicNodeIndex::NONE,
             flags: BytesLiteralFlags::empty().with_invalid(),
         }
+    }
+
+    /// The range of the byte literal's contents.
+    ///
+    /// This excludes any prefixes, opening quotes or closing quotes.
+    pub fn content_range(&self) -> TextRange {
+        TextRange::new(
+            self.start() + self.flags.opener_len(),
+            self.end() - self.flags.closer_len(),
+        )
     }
 }
 
@@ -2712,7 +2824,7 @@ pub struct ExceptHandlerExceptHandler {
     pub node_index: AtomicNodeIndex,
     pub type_: Option<Box<Expr>>,
     pub name: Option<Identifier>,
-    pub body: Vec<Stmt>,
+    pub body: Suite,
 }
 
 /// See also [arg](https://docs.python.org/3/library/ast.html#ast.arg)
@@ -2773,7 +2885,7 @@ pub struct MatchCase {
     pub node_index: AtomicNodeIndex,
     pub pattern: Pattern,
     pub guard: Option<Box<Expr>>,
-    pub body: Vec<Stmt>,
+    pub body: Suite,
 }
 
 impl Pattern {
@@ -2860,7 +2972,7 @@ pub enum IrrefutablePatternKind {
 pub struct PatternArguments {
     pub range: TextRange,
     pub node_index: AtomicNodeIndex,
-    pub patterns: Vec<Pattern>,
+    pub patterns: ThinVec<Pattern>,
     pub keywords: Vec<PatternKeyword>,
 }
 
@@ -3027,10 +3139,10 @@ impl Ranged for AnyParameterRef<'_> {
 pub struct Parameters {
     pub range: TextRange,
     pub node_index: AtomicNodeIndex,
-    pub posonlyargs: Vec<ParameterWithDefault>,
-    pub args: Vec<ParameterWithDefault>,
+    pub posonlyargs: ThinVec<ParameterWithDefault>,
+    pub args: ThinVec<ParameterWithDefault>,
     pub vararg: Option<Box<Parameter>>,
-    pub kwonlyargs: Vec<ParameterWithDefault>,
+    pub kwonlyargs: ThinVec<ParameterWithDefault>,
     pub kwarg: Option<Box<Parameter>>,
 }
 
@@ -3390,7 +3502,7 @@ pub struct Arguments {
     pub range: TextRange,
     pub node_index: AtomicNodeIndex,
     pub args: Box<[Expr]>,
-    pub keywords: Box<[Keyword]>,
+    pub keywords: ThinVec<Keyword>,
 }
 
 /// An entry in the argument list of a function call.
@@ -3616,10 +3728,18 @@ impl<'a> IntoIterator for &'a TypeParams {
     }
 }
 
-/// A suite represents a [Vec] of [Stmt].
+/// A suite represents a sequence of [`Stmt`].
 ///
 /// See: <https://docs.python.org/3/reference/compound_stmts.html#grammar-token-python-grammar-suite>
-pub type Suite = Vec<Stmt>;
+pub type Suite = ThinVec<Stmt>;
+
+pub type DecoratorList = ThinVec<Decorator>;
+
+pub type Patterns = ThinVec<Pattern>;
+
+pub type PatternKeys = ThinVec<Expr>;
+
+pub type ParameterWithDefaults = ThinVec<ParameterWithDefault>;
 
 /// The kind of escape command as defined in [IPython Syntax] in the IPython codebase.
 ///
@@ -3812,26 +3932,28 @@ impl From<bool> for Singleton {
 
 #[cfg(test)]
 mod tests {
-    use crate::Mod;
     use crate::generated::*;
+    use crate::{Arguments, Mod, Parameters};
 
     #[test]
     #[cfg(target_pointer_width = "64")]
     fn size() {
-        assert_eq!(std::mem::size_of::<Stmt>(), 128);
-        assert_eq!(std::mem::size_of::<StmtFunctionDef>(), 128);
-        assert_eq!(std::mem::size_of::<StmtClassDef>(), 120);
-        assert_eq!(std::mem::size_of::<StmtTry>(), 112);
-        assert_eq!(std::mem::size_of::<Mod>(), 40);
-        assert_eq!(std::mem::size_of::<Pattern>(), 104);
-        assert_eq!(std::mem::size_of::<Expr>(), 80);
-        assert_eq!(std::mem::size_of::<ExprAttribute>(), 64);
+        assert_eq!(std::mem::size_of::<Stmt>(), 88);
+        assert_eq!(std::mem::size_of::<StmtFunctionDef>(), 88);
+        assert_eq!(std::mem::size_of::<StmtClassDef>(), 80);
+        assert_eq!(std::mem::size_of::<StmtTry>(), 64);
+        assert_eq!(std::mem::size_of::<Mod>(), 32);
+        assert_eq!(std::mem::size_of::<Pattern>(), 72);
+        assert_eq!(std::mem::size_of::<Parameters>(), 56);
+        assert_eq!(std::mem::size_of::<Arguments>(), 40);
+        assert_eq!(std::mem::size_of::<Expr>(), 64);
+        assert_eq!(std::mem::size_of::<ExprAttribute>(), 56);
         assert_eq!(std::mem::size_of::<ExprAwait>(), 24);
         assert_eq!(std::mem::size_of::<ExprBinOp>(), 32);
         assert_eq!(std::mem::size_of::<ExprBoolOp>(), 40);
         assert_eq!(std::mem::size_of::<ExprBooleanLiteral>(), 16);
         assert_eq!(std::mem::size_of::<ExprBytesLiteral>(), 48);
-        assert_eq!(std::mem::size_of::<ExprCall>(), 72);
+        assert_eq!(std::mem::size_of::<ExprCall>(), 56);
         assert_eq!(std::mem::size_of::<ExprCompare>(), 56);
         assert_eq!(std::mem::size_of::<ExprDict>(), 40);
         assert_eq!(std::mem::size_of::<ExprDictComp>(), 56);
@@ -3843,7 +3965,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<ExprLambda>(), 32);
         assert_eq!(std::mem::size_of::<ExprList>(), 40);
         assert_eq!(std::mem::size_of::<ExprListComp>(), 48);
-        assert_eq!(std::mem::size_of::<ExprName>(), 40);
+        assert_eq!(std::mem::size_of::<ExprName>(), 32);
         assert_eq!(std::mem::size_of::<ExprNamed>(), 32);
         assert_eq!(std::mem::size_of::<ExprNoneLiteral>(), 12);
         assert_eq!(std::mem::size_of::<ExprNumberLiteral>(), 40);
@@ -3851,7 +3973,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<ExprSetComp>(), 48);
         assert_eq!(std::mem::size_of::<ExprSlice>(), 40);
         assert_eq!(std::mem::size_of::<ExprStarred>(), 24);
-        assert_eq!(std::mem::size_of::<ExprStringLiteral>(), 64);
+        assert_eq!(std::mem::size_of::<ExprStringLiteral>(), 48);
         assert_eq!(std::mem::size_of::<ExprSubscript>(), 32);
         assert_eq!(std::mem::size_of::<ExprTuple>(), 40);
         assert_eq!(std::mem::size_of::<ExprUnaryOp>(), 24);

@@ -11,10 +11,11 @@ use ruff_python_parser::{Mode, ParseOptions, parse_unchecked};
 use ruff_source_file::LineIndex;
 use ruff_text_size::{Ranged, TextRange};
 use sha1::{Digest, Sha1};
+use thin_vec::ThinVec;
 
 use crate::func_effect_visitor;
 use crate::options::{
-    CV_HANDLER_LOCATIONS, CV_IMPORT_FLAGS, CV_RAW_EXPRESSION_TYPE_NOTES, Options,
+    CV_DICT_KEY_OPT, CV_HANDLER_LOCATIONS, CV_IMPORT_FLAGS, CV_RAW_EXPRESSION_TYPE_NOTES, Options,
 };
 use crate::reachability::TruthValue::AlwaysTrue;
 use crate::reachability::{
@@ -581,7 +582,7 @@ impl<'a> Serializer<'a> {
     }
 
     // fallback_range = None means deserializer can handle situations when this block is empty.
-    fn serialize_block(&mut self, block: &Vec<ast::Stmt>, fallback_range: Option<TextRange>) {
+    fn serialize_block(&mut self, block: &ThinVec<ast::Stmt>, fallback_range: Option<TextRange>) {
         self.write_tag(TAG_BLOCK);
         self.write_tag(TAG_LIST_GEN);
         self.write_usize(block.len());
@@ -2236,7 +2237,19 @@ impl Ser for ast::Expr {
             ast::Expr::DictComp(dc) => {
                 ser.write_tag(TAG_DICT_COMPREHENSION);
                 // Serialize key expression
-                dc.key.serialize(ser);
+                if ser.options.cache_version() >= CV_DICT_KEY_OPT {
+                    dc.key.serialize(ser);
+                } else {
+                    if dc.key.is_some() {
+                        dc.key.as_ref().unwrap().serialize(ser);
+                    } else {
+                        ser.add_error("PEP 798 is not supported yet".to_string(), dc.range(), true);
+                        // Recover by serializing key as None.
+                        ser.write_tag(TAG_NAME_EXPR);
+                        ser.write_bytes(b"None");
+                        ser.write_location(dc.range());
+                    }
+                }
                 // Serialize value expression
                 dc.value.serialize(ser);
                 // Serialize number of generators
@@ -2650,9 +2663,9 @@ fn serialize_fstring_elements(ser: &mut Serializer, elems: Vec<&ast::Interpolate
                 let mut use_r = false;
                 if let Some(debug_text) = &interp.debug_text {
                     let range = interp.expression.range();
-                    let text = String::from(&debug_text.leading)
+                    let text = String::from(debug_text.leading())
                         + &ser.text[range]
-                        + debug_text.trailing.as_str();
+                        + debug_text.trailing();
                     ser.write_bytes(text.as_bytes());
                     ser.write_location(range);
                     // This logic mimics _get_interpolation_conversion() in Python parser: only
