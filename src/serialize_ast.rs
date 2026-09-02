@@ -852,6 +852,22 @@ fn function_comment_to_expr(
 /// Used for BytesExpr in expression contexts where we need a human-readable form
 fn serialize_bytes_to_escaped_string(bytes_lit: &ast::ExprBytesLiteral) -> Vec<u8> {
     let mut result = Vec::new();
+
+    // This replicates "smart-quote" logic in PyBytes_Repr (which is used by old parser)
+    let mut squotes = false;
+    let mut dquotes = false;
+    for bytes_part in bytes_lit.value.iter() {
+        for &byte in bytes_part.value.iter() {
+            if byte == b'\'' {
+                squotes = true;
+            }
+            if byte == b'"' {
+                dquotes = true;
+            }
+        }
+    }
+    let escape_quote = squotes && dquotes;
+
     for bytes_part in bytes_lit.value.iter() {
         for &byte in bytes_part.value.iter() {
             match byte {
@@ -859,7 +875,7 @@ fn serialize_bytes_to_escaped_string(bytes_lit: &ast::ExprBytesLiteral) -> Vec<u
                 b'\n' => result.extend_from_slice(b"\\n"),
                 b'\t' => result.extend_from_slice(b"\\t"),
                 b'\\' => result.extend_from_slice(b"\\\\"),
-                b'\'' => result.extend_from_slice(b"\\'"),
+                b'\'' if escape_quote => result.extend_from_slice(b"\\'"),
                 // Printable ASCII characters (space to ~)
                 32..=126 => result.push(byte),
                 // Everything else as hex escape
