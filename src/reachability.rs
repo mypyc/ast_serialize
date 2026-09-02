@@ -116,6 +116,25 @@ fn contains_int_or_tuple_of_ints(expr: &ast::Expr) -> Option<IntOrTuple> {
     None
 }
 
+/// Check whether a tuple, list, or set of string literals contains a string.
+fn string_literal_container_contains(expr: &ast::Expr, value: &str) -> Option<bool> {
+    let items = match expr {
+        ast::Expr::Tuple(tuple) => &tuple.elts,
+        ast::Expr::List(list) => &list.elts,
+        ast::Expr::Set(set) => &set.elts,
+        _ => return None,
+    };
+
+    let mut contains = false;
+    for item in items {
+        let ast::Expr::StringLiteral(string_lit) = item else {
+            return None;
+        };
+        contains |= string_lit.value.to_str() == value;
+    }
+    Some(contains)
+}
+
 /// Check if an expression is an attribute access on 'sys' with the given name.
 /// For example, `is_sys_attr(expr, "platform")` returns true for `sys.platform`.
 fn is_sys_attr(expr: &ast::Expr, name: &str) -> bool {
@@ -366,19 +385,28 @@ pub(crate) fn consider_sys_platform(expr: &ast::Expr, options: &Options) -> Trut
             }
 
             let op = compare.ops[0];
-            // Only support == and !=
-            if !matches!(op, ast::CmpOp::Eq | ast::CmpOp::NotEq) {
-                return TruthValue::TruthValueUnknown;
-            }
 
             // Check if left operand is sys.platform
             if !is_sys_attr(&compare.left, "platform") {
                 return TruthValue::TruthValueUnknown;
             }
 
-            // Check if right operand is a string literal
-            if let ast::Expr::StringLiteral(string_lit) = &compare.comparators[0] {
-                return fixed_comparison(platform, op, string_lit.value.to_str());
+            let right = &compare.comparators[0];
+            if matches!(op, ast::CmpOp::Eq | ast::CmpOp::NotEq) {
+                if let ast::Expr::StringLiteral(string_lit) = right {
+                    return fixed_comparison(platform, op, string_lit.value.to_str());
+                }
+            } else if matches!(op, ast::CmpOp::In | ast::CmpOp::NotIn) {
+                if let Some(mut result) = string_literal_container_contains(right, platform) {
+                    if op == ast::CmpOp::NotIn {
+                        result = !result;
+                    }
+                    return if result {
+                        TruthValue::AlwaysTrue
+                    } else {
+                        TruthValue::AlwaysFalse
+                    };
+                }
             }
 
             TruthValue::TruthValueUnknown
@@ -1011,6 +1039,68 @@ mod tests {
             consider_sys_platform(&parse_expr("sys.platform != 'linux'"), &linux_options),
             TruthValue::AlwaysFalse
         );
+
+        // Membership in tuple, list, and set literals
+        for container in [
+            "('linux', 'darwin')",
+            "['linux', 'darwin']",
+            "{'linux', 'darwin'}",
+        ] {
+            assert_eq!(
+                consider_sys_platform(
+                    &parse_expr(&format!("sys.platform in {container}")),
+                    &linux_options
+                ),
+                TruthValue::AlwaysTrue
+            );
+            assert_eq!(
+                consider_sys_platform(
+                    &parse_expr(&format!("sys.platform not in {container}")),
+                    &linux_options
+                ),
+                TruthValue::AlwaysFalse
+            );
+        }
+
+        // Membership when the configured platform is absent
+        assert_eq!(
+            consider_sys_platform(
+                &parse_expr("sys.platform in ('win32', 'cygwin')"),
+                &linux_options
+            ),
+            TruthValue::AlwaysFalse
+        );
+        assert_eq!(
+            consider_sys_platform(
+                &parse_expr("sys.platform not in ('win32', 'cygwin')"),
+                &linux_options
+            ),
+            TruthValue::AlwaysTrue
+        );
+
+        // Empty tuple and list literals
+        assert_eq!(
+            consider_sys_platform(&parse_expr("sys.platform in ()"), &linux_options),
+            TruthValue::AlwaysFalse
+        );
+        assert_eq!(
+            consider_sys_platform(&parse_expr("sys.platform not in []"), &linux_options),
+            TruthValue::AlwaysTrue
+        );
+
+        // Unsupported membership containers
+        for expression in [
+            "sys.platform in ('linux', platform)",
+            "sys.platform in {'linux': 1}",
+            "sys.platform in platforms",
+            "sys.platform in 'linux'",
+            "'linux' in sys.platform",
+        ] {
+            assert_eq!(
+                consider_sys_platform(&parse_expr(expression), &linux_options),
+                TruthValue::TruthValueUnknown
+            );
+        }
 
         // Unsupported: other comparison operators
         assert_eq!(
