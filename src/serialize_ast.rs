@@ -15,7 +15,8 @@ use thin_vec::ThinVec;
 
 use crate::func_effect_visitor;
 use crate::options::{
-    CV_DICT_KEY_OPT, CV_HANDLER_LOCATIONS, CV_IMPORT_FLAGS, CV_RAW_EXPRESSION_TYPE_NOTES, Options,
+    CV_DICT_KEY_OPT, CV_HANDLER_LOCATIONS, CV_IMPORT_FLAGS, CV_RAW_EXPRESSION_TYPE_NOTES,
+    CV_UNICODE_SURROGATE, Options,
 };
 use crate::reachability::TruthValue::AlwaysTrue;
 use crate::reachability::{
@@ -306,6 +307,7 @@ pub(crate) fn serialize_python_file(
         extra_errors: Vec::new(),
         skipped_lines: HashSet::new(),
         uses_template_strings: false,
+        has_surrogates: false,
     };
     if top_unreachable {
         // Module is ignored completely.
@@ -402,6 +404,30 @@ impl<'a, 'py> pyo3::FromPyObject<'a, 'py> for Source<'a> {
     }
 }
 
+// Parse a fixed size hex integer (known to be valid)
+fn parse_int(chars: &mut std::str::Chars, size: usize) -> u32 {
+    let mut result: u32 = 0u32;
+    for i in 1..=size {
+        match chars.next() {
+            // We know that there are no invalid escapes, since the string parsed successfully
+            Some(c) => match c.to_digit(16) {
+                Some(d) => result += d << ((size - i) * 4),
+                None => unreachable!(),
+            },
+            None => unreachable!(),
+        }
+    }
+    result
+}
+
+// Check if given codepoint is a Unicode surrogate
+fn is_surrogate(ord: u32) -> bool {
+    if ord >= 0xd800 && ord <= 0xdfff {
+        return true;
+    }
+    false
+}
+
 struct Serializer<'a> {
     bytes: Vec<u8>,
     imports: Vec<ImportStatement>, // Encountered import statements
@@ -422,6 +448,7 @@ struct Serializer<'a> {
     extra_errors: Vec<SyntaxError>, // Additional errors found while processing parsed tree
     skipped_lines: HashSet<usize>, // Lines of blocks that were found unreachable
     uses_template_strings: bool, // Whether parsed file uses t-strings
+    has_surrogates: bool, // Whether we have seen Unicode surrogate codepoints
 }
 
 impl<'a> Serializer<'a> {
@@ -538,6 +565,36 @@ impl<'a> Serializer<'a> {
         } else {
             // This line is ASCII, no conversion needed
             byte_column
+        }
+    }
+
+    /// Record if the text range contains Unicode surrogates (including escaped ones)
+    fn check_surrogate_codepoint(&mut self, parsed_value: &str, range: TextRange) {
+        if !parsed_value.contains(char::REPLACEMENT_CHARACTER) {
+            return;
+        }
+        if self.has_surrogates {
+            // No need to check, we already have seen some surrogates
+            return;
+        }
+        let mut chars = self.text[range].chars();
+        while let Some(char) = chars.next() {
+            if is_surrogate(char.into()) {
+                self.has_surrogates = true;
+                return;
+            }
+            if char == '\\' {
+                if let Some(next_char) = chars.next() {
+                    if next_char == 'u' && is_surrogate(parse_int(&mut chars, 4)) {
+                        self.has_surrogates = true;
+                        return;
+                    }
+                    if next_char == 'U' && is_surrogate(parse_int(&mut chars, 8)) {
+                        self.has_surrogates = true;
+                        return;
+                    }
+                }
+            }
         }
     }
 
@@ -2114,8 +2171,13 @@ impl Ser for ast::Expr {
                 let value = &s.value;
                 ser.write_tag(TAG_LITERAL_STR);
                 ser.write_usize(value.len());
+                ser.has_surrogates = false;
                 for part in value.iter() {
                     ser.bytes.extend_from_slice(part.as_bytes());
+                    ser.check_surrogate_codepoint(&part.value, part.range());
+                }
+                if ser.options.cache_version() >= CV_UNICODE_SURROGATE {
+                    ser.write_bool(ser.has_surrogates)
                 }
                 ser.write_location(s.range());
             }
@@ -2402,6 +2464,7 @@ impl Ser for ast::Expr {
             ast::Expr::FString(fs) => {
                 ser.write_tag(TAG_FSTRING_EXPR);
                 ser.write_tagged_int(fs.value.iter().len() as i64);
+                ser.has_surrogates = false;
                 for part in fs.value.iter() {
                     match part {
                         ast::FStringPart::FString(fstring_part) => {
@@ -2411,9 +2474,13 @@ impl Ser for ast::Expr {
                         ast::FStringPart::Literal(lit) => {
                             ser.write_bool(false);
                             ser.write_bytes(lit.value.as_bytes());
+                            ser.check_surrogate_codepoint(&lit.value, lit.range());
                             ser.write_location(lit.range());
                         }
                     }
+                }
+                if ser.options.cache_version() >= CV_UNICODE_SURROGATE {
+                    ser.write_bool(ser.has_surrogates)
                 }
                 ser.write_location(fs.range());
             }
@@ -2482,6 +2549,7 @@ impl Ser for ast::Expr {
                 ser.uses_template_strings = true;
                 ser.write_tag(TAG_TSTRING_EXPR);
                 ser.write_tagged_int(ts.value.elements().count() as i64);
+                ser.has_surrogates = false;
                 for part in ts.value.elements() {
                     match part {
                         ast::InterpolatedStringElement::Interpolation(tstring_part) => {
@@ -2523,9 +2591,13 @@ impl Ser for ast::Expr {
                         ast::InterpolatedStringElement::Literal(lit) => {
                             ser.write_bool(false);
                             ser.write_bytes(lit.value.as_bytes());
+                            ser.check_surrogate_codepoint(&lit.value, lit.range());
                             ser.write_location(lit.range());
                         }
                     }
+                }
+                if ser.options.cache_version() >= CV_UNICODE_SURROGATE {
+                    ser.write_bool(ser.has_surrogates)
                 }
                 ser.write_location(ts.range());
             }
@@ -2669,6 +2741,7 @@ fn serialize_fstring_elements(ser: &mut Serializer, elems: Vec<&ast::Interpolate
         match elem {
             ast::InterpolatedStringElement::Literal(lit) => {
                 ser.write_bytes(lit.value.as_bytes());
+                ser.check_surrogate_codepoint(&lit.value, lit.range());
                 ser.write_location(lit.range());
             }
             ast::InterpolatedStringElement::Interpolation(interp) => {
@@ -3317,6 +3390,7 @@ pub(crate) fn serialize_imports(
         extra_errors: Vec::new(),
         skipped_lines: HashSet::new(),
         uses_template_strings: false,
+        has_surrogates: false,
     };
 
     // Write list of imports
@@ -3451,6 +3525,7 @@ mod tests {
             extra_errors: Vec::new(),
             skipped_lines: HashSet::new(),
             uses_template_strings: false,
+            has_surrogates: false,
         }
     }
 
