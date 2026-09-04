@@ -568,7 +568,7 @@ impl<'a> Serializer<'a> {
         }
     }
 
-    /// Record if the text range contains Unicode surrogates (including escaped ones)
+    /// Record if the text range contains Unicode surrogates (escaped ones)
     fn check_surrogate_codepoint(&mut self, parsed_value: &str, range: TextRange) {
         if !parsed_value.contains(char::REPLACEMENT_CHARACTER) {
             return;
@@ -579,10 +579,8 @@ impl<'a> Serializer<'a> {
         }
         let mut chars = self.text[range].chars();
         while let Some(char) = chars.next() {
-            if is_surrogate(char.into()) {
-                self.has_surrogates = true;
-                return;
-            }
+            // Rust strings cannot contain unpaired surrogates, so we only need to check
+            // for escape sequences encoding a surrogate.
             if char == '\\' {
                 if let Some(next_char) = chars.next() {
                     if next_char == 'u' && is_surrogate(parse_int(&mut chars, 4)) {
@@ -3739,6 +3737,30 @@ mod tests {
     }
 
     #[test]
+    fn test_has_surrogate_positive() {
+        let text = "print('\\ud800')\n";
+        let mut ser = make_ser(text);
+        let opt = ParseOptions::from(PySourceType::Python);
+        let parsed = parse_unchecked(text, opt);
+        let ast = parsed.syntax();
+
+        ast.serialize(&mut ser);
+        assert!(ser.has_surrogates);
+    }
+
+    #[test]
+    fn test_has_surrogate_reset() {
+        let text = "print('\\ud800')\nprint('ok')\n";
+        let mut ser = make_ser(text);
+        let opt = ParseOptions::from(PySourceType::Python);
+        let parsed = parse_unchecked(text, opt);
+        let ast = parsed.syntax();
+
+        ast.serialize(&mut ser);
+        assert!(!ser.has_surrogates);
+    }
+
+    #[test]
     fn test_unicode_with_crlf_line_endings() {
         // Test that Unicode handling works correctly with Windows (CRLF) line endings
         let text = "# Comment with 中文\r\ndef привет():\r\n    x = \"🎉\"\r\n";
@@ -3813,6 +3835,7 @@ mod tests {
             b'l',
             b'l',
             b'o',
+            0, // no surrogates
             TAG_LOCATION,
             int_val(1),
             int_val(6),
@@ -4016,7 +4039,7 @@ mod tests {
             "linux".to_string(),
             vec!["FLAG".to_string()],
             vec![],
-            1,
+            5,
         );
         let result_option = serialize_python_file(&path2, None, false, options_with_flag).unwrap();
 

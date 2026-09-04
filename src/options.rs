@@ -15,7 +15,7 @@ impl Default for Options {
             always_true: Vec::new(),
             always_false: Vec::new(),
             // Always set to latest supported version.
-            cache_version: 1,
+            cache_version: 5,
         }
     }
 }
