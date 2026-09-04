@@ -568,7 +568,7 @@ impl<'a> Serializer<'a> {
         }
     }
 
-    /// Record if the text range contains Unicode surrogates (escaped ones)
+    /// Record if the text range contains Unicode surrogates (including non-escaped ones)
     fn check_surrogate_codepoint(&mut self, parsed_value: &str, range: TextRange) {
         if !parsed_value.contains(char::REPLACEMENT_CHARACTER) {
             return;
@@ -579,8 +579,11 @@ impl<'a> Serializer<'a> {
         }
         let mut chars = self.text[range].chars();
         while let Some(char) = chars.next() {
-            // Rust strings cannot contain unpaired surrogates, so we only need to check
-            // for escape sequences encoding a surrogate.
+            // Rust strings should not contain raw surrogates, but we are defensive.
+            if is_surrogate(char.into()) {
+                self.has_surrogates = true;
+                return;
+            }
             if char == '\\' {
                 if let Some(next_char) = chars.next() {
                     if next_char == 'u' && is_surrogate(parse_int(&mut chars, 4)) {
