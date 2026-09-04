@@ -15,7 +15,7 @@ impl Default for Options {
             always_true: Vec::new(),
             always_false: Vec::new(),
             // Always set to latest supported version.
-            cache_version: 1,
+            cache_version: 5,
         }
     }
 }
@@ -28,6 +28,8 @@ pub(crate) const CV_RAW_EXPRESSION_TYPE_NOTES: u32 = 2;
 pub(crate) const CV_IMPORT_FLAGS: u32 = 3;
 // Handle optional keys in dictionary comprehensions (PEP 798).
 pub(crate) const CV_DICT_KEY_OPT: u32 = 4;
+// Set string unicode surrogate flag.
+pub(crate) const CV_UNICODE_SURROGATE: u32 = 5;
 
 impl Options {
     pub(crate) fn new(
