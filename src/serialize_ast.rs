@@ -783,7 +783,7 @@ fn first_statement_line(tree: &ast::Mod, source: &str, line_index: &LineIndex) -
 /// - A vector of tuples (line_number, error_codes) where `type: ignore` comments appear
 /// - A vector of tuples (line_number, error_codes) where `mypy: ignore` comments appear
 /// - A HashMap mapping line numbers (1-indexed) to parsed type annotation AST expressions
-/// - A vector of tuples (line_number, error_code) where `mypy: some-inline-config` comments appear
+/// - A vector of tuples (line_number, inline_config) where `mypy: inline-config` comments appear
 /// - A vector of SyntaxErrors for invalid `type: ignore` and `mypy: ignore` comments
 ///
 /// This function combines the functionality of extract_type_ignore_lines and extract_type_comments
