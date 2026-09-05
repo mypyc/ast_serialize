@@ -15,8 +15,8 @@ use thin_vec::ThinVec;
 
 use crate::func_effect_visitor;
 use crate::options::{
-    CV_DICT_KEY_OPT, CV_HANDLER_LOCATIONS, CV_IMPORT_FLAGS, CV_RAW_EXPRESSION_TYPE_NOTES,
-    CV_UNICODE_SURROGATE, Options,
+    CV_DICT_KEY_OPT, CV_FUNC_TYPE_COMMENT_FLAG, CV_HANDLER_LOCATIONS, CV_IMPORT_FLAGS,
+    CV_RAW_EXPRESSION_TYPE_NOTES, CV_UNICODE_SURROGATE, Options,
 };
 use crate::reachability::TruthValue::AlwaysTrue;
 use crate::reachability::{
@@ -988,7 +988,7 @@ fn argument_elide_name(name: &str) -> bool {
 fn serialize_parameters(
     ser: &mut Serializer,
     params: &ast::Parameters,
-    arg_comments: Vec<Option<ast::Expr>>,
+    arg_comments: &Vec<Option<ast::Expr>>,
 ) {
     // Count total number of arguments
     let mut arg_count = 0;
@@ -1362,7 +1362,7 @@ impl Ser for ast::Stmt {
                 // Function name
                 ser.write_bytes(f.name.as_bytes());
                 // Parameters
-                serialize_parameters(ser, &f.parameters, arg_comments);
+                serialize_parameters(ser, &f.parameters, &arg_comments);
 
                 // Body - may be omitted if skip_function_bodies is enabled
                 let should_serialize_body = if ser.skip_function_bodies {
@@ -1424,7 +1424,7 @@ impl Ser for ast::Stmt {
                     serialize_type(ser, ret);
                 } else if ret_comment.is_some() {
                     ser.write_bool(true);
-                    let mut ret_comment = ret_comment.unwrap();
+                    let mut ret_comment = ret_comment.clone().unwrap();
                     ast::relocate::relocate_expr(&mut ret_comment, f.range());
                     let was_evaluated = ser.is_evaluated;
                     ser.is_evaluated = false;
@@ -1432,6 +1432,15 @@ impl Ser for ast::Stmt {
                     ser.is_evaluated = was_evaluated;
                 } else {
                     ser.write_bool(false); // No return annotation
+                }
+
+                // Record that type comment was present for this function
+                if ser.options.cache_version() >= CV_FUNC_TYPE_COMMENT_FLAG {
+                    if arg_comments.iter().any(|ac| ac.is_some()) || ret_comment.is_some() {
+                        ser.write_bool(true);
+                    } else {
+                        ser.write_bool(false);
+                    }
                 }
 
                 // Write location
@@ -2494,7 +2503,7 @@ impl Ser for ast::Expr {
                     for _ in 0..params.len() {
                         empty.push(None);
                     }
-                    serialize_parameters(ser, params, empty);
+                    serialize_parameters(ser, params, &empty);
                 } else {
                     // No parameters - empty argument list
                     ser.write_tag(TAG_LIST_GEN);
