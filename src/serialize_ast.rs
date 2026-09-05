@@ -40,15 +40,11 @@ const TAG_LITERAL_TRUE: u8 = 1;
 const TAG_LITERAL_NONE: u8 = 2;
 const TAG_LITERAL_INT: u8 = 3;
 const TAG_LITERAL_STR: u8 = 4;
-const TAG_LITERAL_BYTES: u8 = 5;
 const TAG_LITERAL_FLOAT: u8 = 6;
-const TAG_LITERAL_COMPLEX: u8 = 7;
 
 // Fixed tags for collections (must match mypy/cache.py)
 const TAG_LIST_GEN: u8 = 20;
 const TAG_LIST_INT: u8 = 21;
-const TAG_LIST_STR: u8 = 22;
-const TAG_LIST_BYTES: u8 = 23;
 const TAG_DICT_STR_GEN: u8 = 30;
 
 const TAG_DECORATOR: u8 = 53;
