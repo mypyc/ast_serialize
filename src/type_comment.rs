@@ -23,7 +23,7 @@ pub enum TypeComment {
 ///
 /// # Arguments
 ///
-/// * `comment` - The comment string to parse (should include the leading `#`)
+/// * `comment` - The comment string to parse (must include the leading `#`)
 ///
 /// # Returns
 ///
@@ -44,10 +44,14 @@ pub enum TypeComment {
 /// assert_eq!(result.len(), 2);  // Both annotation and ignore
 /// ```
 pub fn parse_type_comments(comment: &str) -> Option<Vec<TypeComment>> {
+    if !comment.starts_with('#') {
+        // Guard against some possible parse error recovery
+        return None;
+    }
     let mut parts = Vec::new();
 
-    // Remove leading '#' and whitespace
-    let trimmed = comment.trim_start_matches('#').trim_start();
+    // Remove (one) leading '#' and whitespace (to match old parser behavior)
+    let trimmed = comment.strip_prefix('#').unwrap().trim_start();
 
     let mypy_comment = trimmed.starts_with("mypy:");
     // Check if it starts with "type:"
@@ -78,9 +82,7 @@ pub fn parse_type_comments(comment: &str) -> Option<Vec<TypeComment>> {
                 // We allow multiple ignore comments per line.
                 if let Some(remainder_ignores) = parse_type_comments(&after_type[hash_pos..]) {
                     for part in remainder_ignores {
-                        if !matches!(part, TypeComment::TypeAnnotation(_)) {
-                            parts.push(part);
-                        }
+                        parts.push(part);
                     }
                 }
             }
@@ -115,9 +117,7 @@ pub fn parse_type_comments(comment: &str) -> Option<Vec<TypeComment>> {
         if let Some(remainder_parts) = parse_type_comments(remainder_str) {
             // Add any ignore parts found
             for part in remainder_parts {
-                if !matches!(part, TypeComment::TypeAnnotation(_)) {
-                    parts.push(part);
-                }
+                parts.push(part);
             }
         }
     }
@@ -189,7 +189,7 @@ fn parse_error_codes(after_ignore: &str) -> Option<Vec<String>> {
 /// assert_eq!(parse_type_comment("# type: int  # type: ignore[override]"), Some(vec!["override".to_string()]));
 /// assert_eq!(parse_type_comment("# regular comment"), None);
 /// ```
-fn parse_type_comment(comment: &str) -> Option<Vec<String>> {
+pub fn parse_type_comment(comment: &str) -> Option<Vec<String>> {
     let parts = parse_type_comments(comment)?;
     // Find the first Ignore part
     for part in parts {
@@ -348,6 +348,12 @@ mod tests {
     fn test_empty_comment() {
         assert_eq!(parse_type_comment("#"), None);
         assert_eq!(parse_type_comment(""), None);
+    }
+
+    #[test]
+    fn test_commented_out_comment() {
+        assert_eq!(parse_type_comment("## type: ignore"), None);
+        assert_eq!(parse_type_comment("## type: ignore[arg-type]"), None);
     }
 
     #[test]

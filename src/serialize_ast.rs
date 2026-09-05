@@ -851,6 +851,16 @@ fn extract_type_comments_and_ignores(
                             mypy_ignore_lines.push((line_number, error_codes));
                         }
                         type_comment::TypeComment::TypeAnnotation(annotation) => {
+                            if type_comments.contains_key(&line_number) {
+                                syntax_errors.push(SyntaxError {
+                                    line: line_number,
+                                    column,
+                                    message: "Multiple type comments on the same line".to_string(),
+                                    // To match old parser behavior
+                                    blocker: true,
+                                });
+                                continue;
+                            }
                             let wrapped = format!("({})", annotation);
                             let parse_result =
                                 parse_unchecked(&wrapped, ParseOptions::from(Mode::Expression));
@@ -3788,6 +3798,25 @@ mod tests {
 
         ast.serialize(&mut ser);
         assert!(!ser.has_surrogates);
+    }
+
+    #[test]
+    fn test_multiple_type_comments_errors() {
+        let text = "x = 1  # type: int # type: str\n";
+        let opt = ParseOptions::from(PySourceType::Python);
+        let parsed = parse_unchecked(text, opt);
+        let line_index = LineIndex::from_source_text(text);
+
+        let (_, _, _, _, syntax_errors) =
+            extract_type_comments_and_ignores(parsed.tokens(), text, &line_index);
+        assert_eq!(
+            syntax_errors
+                .iter()
+                .filter(|e| e.blocker)
+                .collect::<Vec<&SyntaxError>>()
+                .len(),
+            1
+        );
     }
 
     #[test]
