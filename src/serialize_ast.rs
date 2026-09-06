@@ -242,8 +242,16 @@ pub(crate) fn serialize_python_file(
         .collect();
 
     // Extract both type: ignore comments and type annotation comments in a single pass
-    let (mut type_ignore_lines, mut mypy_ignore_lines, type_comments, mypy_comments) =
-        extract_type_comments_and_ignores(parsed.tokens(), source_text, &line_index);
+    let (
+        mut type_ignore_lines,
+        mut mypy_ignore_lines,
+        type_comments,
+        mypy_comments,
+        tc_syntax_errors,
+    ) = extract_type_comments_and_ignores(parsed.tokens(), source_text, &line_index);
+    for syntax_error in tc_syntax_errors {
+        syntax_errors.push(syntax_error);
+    }
 
     // Apply inline config overrides that affect parsing/serialization.
     let inline_overrides = crate::mypy_inline_config::resolve_overrides(&mypy_comments);
@@ -769,7 +777,10 @@ fn first_statement_line(tree: &ast::Mod, source: &str, line_index: &LineIndex) -
 ///
 /// A tuple containing:
 /// - A vector of tuples (line_number, error_codes) where `type: ignore` comments appear
+/// - A vector of tuples (line_number, error_codes) where `mypy: ignore` comments appear
 /// - A HashMap mapping line numbers (1-indexed) to parsed type annotation AST expressions
+/// - A vector of tuples (line_number, inline_config) where `mypy: inline-config` comments appear
+/// - A vector of SyntaxErrors for invalid `type: ignore` and `mypy: ignore` comments
 ///
 /// This function combines the functionality of extract_type_ignore_lines and extract_type_comments
 /// to avoid two separate passes over the token sequence, improving cache locality.
@@ -782,17 +793,20 @@ fn extract_type_comments_and_ignores(
     Vec<(usize, Vec<String>)>,
     HashMap<usize, ParsedTypeComment>,
     Vec<(usize, String)>,
+    Vec<SyntaxError>,
 ) {
     let mut type_ignore_lines = Vec::new();
     let mut mypy_ignore_lines = Vec::new();
     let mut type_comments = HashMap::new();
     let mut mypy_comments = Vec::new();
+    let mut syntax_errors = Vec::new();
 
     for token in tokens.iter() {
         if token.kind().is_comment() {
             let comment_text = &source[token.range()];
             let location = line_index.line_column(token.start(), source);
             let line_number = location.line.get();
+            let column = location.column.get();
 
             // Check for "# mypy: " inline configuration comments at start of line.
             // Skip "# mypy: ignore" / "# mypy: ignore[...]" which are already
@@ -814,6 +828,18 @@ fn extract_type_comments_and_ignores(
             if let Some(parts) = type_comment::parse_type_comments(comment_text) {
                 for part in parts {
                     match part {
+                        type_comment::TypeComment::InvalidIgnore(is_mypy) => {
+                            let message = format!(
+                                "Invalid \"{}: ignore\" comment",
+                                if is_mypy { "mypy" } else { "type" }
+                            );
+                            syntax_errors.push(SyntaxError {
+                                line: line_number,
+                                column,
+                                message: message.to_string(),
+                                blocker: false,
+                            });
+                        }
                         type_comment::TypeComment::TypeIgnore(error_codes) => {
                             type_ignore_lines.push((line_number, error_codes));
                         }
@@ -821,6 +847,16 @@ fn extract_type_comments_and_ignores(
                             mypy_ignore_lines.push((line_number, error_codes));
                         }
                         type_comment::TypeComment::TypeAnnotation(annotation) => {
+                            if type_comments.contains_key(&line_number) {
+                                syntax_errors.push(SyntaxError {
+                                    line: line_number,
+                                    column,
+                                    message: "Multiple type comments on the same line".to_string(),
+                                    // To match old parser behavior
+                                    blocker: true,
+                                });
+                                continue;
+                            }
                             let wrapped = format!("({})", annotation);
                             let parse_result =
                                 parse_unchecked(&wrapped, ParseOptions::from(Mode::Expression));
@@ -873,6 +909,7 @@ fn extract_type_comments_and_ignores(
         mypy_ignore_lines,
         type_comments,
         mypy_comments,
+        syntax_errors,
     )
 }
 
@@ -3760,6 +3797,25 @@ mod tests {
     }
 
     #[test]
+    fn test_multiple_type_comments_errors() {
+        let text = "x = 1  # type: int # type: str\n";
+        let opt = ParseOptions::from(PySourceType::Python);
+        let parsed = parse_unchecked(text, opt);
+        let line_index = LineIndex::from_source_text(text);
+
+        let (_, _, _, _, syntax_errors) =
+            extract_type_comments_and_ignores(parsed.tokens(), text, &line_index);
+        assert_eq!(
+            syntax_errors
+                .iter()
+                .filter(|e| e.blocker)
+                .collect::<Vec<&SyntaxError>>()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn test_unicode_with_crlf_line_endings() {
         // Test that Unicode handling works correctly with Windows (CRLF) line endings
         let text = "# Comment with 中文\r\ndef привет():\r\n    x = \"🎉\"\r\n";
@@ -3908,7 +3964,7 @@ mod tests {
     fn extract_mypy_comments(source: &str) -> Vec<(usize, String)> {
         let parsed = parse_unchecked(source, ParseOptions::from(PySourceType::Python));
         let line_index = LineIndex::from_source_text(source);
-        let (_, _, _, mypy_comments) =
+        let (_, _, _, mypy_comments, _) =
             extract_type_comments_and_ignores(parsed.tokens(), source, &line_index);
         mypy_comments
     }
