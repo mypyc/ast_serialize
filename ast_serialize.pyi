@@ -32,3 +32,8 @@ def parse(
     cache_version: int = 0,
 ) -> tuple[bytes, list[ParseError], _TypeIgnores, bytes, _ASTData]:
     ...
+
+def parse_type_string(
+    source: str, range: tuple[int, int, int, int], cache_version: int = 0
+) -> bytes:
+    ...

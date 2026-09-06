@@ -191,9 +191,60 @@ fn get_default_platform(py: Python) -> PyResult<String> {
     sys.getattr("platform")?.extract()
 }
 
+/// Parse and serialize a single type (escaped as a string, e.g. a forward reference)
+///
+/// # Arguments
+///
+/// * `source` - The type string source
+/// * `range` - The location of the type string on original source file as
+///   `(line, column, end_line, end_column)`
+/// * `cache_version` - The cache version to use for serialization
+///
+/// # Returns
+///
+/// bytes: The serialized AST in mypy's format
+///
+/// # Errors
+///
+/// Normally should never raise.
+#[pyfunction]
+#[pyo3(signature = (
+    source,
+    range,
+    cache_version=0
+))]
+fn parse_type_string(
+    py: Python,
+    source: String,
+    range: (u32, u32, u32, u32),
+    cache_version: u32,
+) -> PyResult<Vec<u8>> {
+    // These should only affect reachability, so wwe can use default values here.
+    let python_version = get_default_python_version(py)?;
+    let platform = get_default_platform(py)?;
+
+    let ast_bytes = py
+        .detach(|| {
+            serialize_ast::serialize_type_string(
+                source.as_ref(),
+                options::Options::new(
+                    python_version,
+                    platform,
+                    Vec::new(),
+                    Vec::new(),
+                    cache_version,
+                ),
+                range,
+            )
+        })
+        .map_err(|e| PyErr::new::<PyValueError, _>(e.to_string()))?;
+    Ok(ast_bytes)
+}
+
 /// A Python module for parsing Python files and serializing to mypy AST format
 #[pymodule]
 fn ast_serialize(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(parse, m)?)?;
+    m.add_function(wrap_pyfunction!(parse_type_string, m)?)?;
     Ok(())
 }
