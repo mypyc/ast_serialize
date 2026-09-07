@@ -304,6 +304,7 @@ pub(crate) fn serialize_python_file(
         skipped_lines: HashSet::new(),
         uses_template_strings: false,
         has_surrogates: false,
+        location_override: None,
     };
     if top_unreachable {
         // Module is ignored completely.
@@ -445,6 +446,7 @@ struct Serializer<'a> {
     skipped_lines: HashSet<usize>, // Lines of blocks that were found unreachable
     uses_template_strings: bool, // Whether parsed file uses t-strings
     has_surrogates: bool, // Whether we have seen Unicode surrogate codepoints
+    location_override: Option<(u32, u32, u32, u32)>, // Location override to use when serializing AST
 }
 
 impl<'a> Serializer<'a> {
@@ -597,6 +599,13 @@ impl<'a> Serializer<'a> {
 
     fn write_location(&mut self, range: TextRange) {
         self.write_tag(TAG_LOCATION);
+        if let Some((line, column, end_line, end_column)) = self.location_override {
+            self.write_int(line as i64);
+            self.write_int(column as i64);
+            self.write_int(end_line as i64 - line as i64);
+            self.write_int(end_column as i64 - column as i64);
+            return;
+        }
         let st_loc = self.line_index.line_column(range.start(), self.text);
         let st_line = st_loc.line.get() as i64;
         let st_column_bytes = st_loc.column.get();
@@ -3072,6 +3081,41 @@ fn serialize_type(ser: &mut Serializer, t: &ast::Expr) {
     ser.write_end_tag();
 }
 
+/// A thin wrapper exposing serialize_string_type() below as a standalone function.
+pub(crate) fn serialize_type_string(
+    source: &str,
+    options: Options,
+    range: (u32, u32, u32, u32),
+) -> Result<Vec<u8>> {
+    let mut ser = Serializer {
+        bytes: Vec::new(),
+        imports: Vec::new(),
+        // Fake/empty values given because they are required,
+        // actual location is set by `location_override`
+        line_index: LineIndex::from_source_text(""),
+        tokens: None,
+        text: "",
+        skip_function_bodies: false,
+        in_class: false,
+        in_function: false,
+        is_all_ascii: false,
+        lines_with_non_ascii: Vec::new(),
+        type_comments: HashMap::new(),
+        options,
+        current_unreachable: false,
+        current_mypy_only: false,
+        top_level_getattr: false,
+        is_evaluated: false,
+        extra_errors: Vec::new(),
+        skipped_lines: HashSet::new(),
+        uses_template_strings: false,
+        has_surrogates: false,
+        location_override: Some(range),
+    };
+    serialize_string_type(&mut ser, source, TextRange::default());
+    Ok(ser.bytes)
+}
+
 /// Parse and serialize a string literal that appears in a type context.
 /// This handles forward references like `x: "int"` and string literals in Literal types.
 fn serialize_string_type(ser: &mut Serializer, string_value: &str, range: TextRange) {
@@ -3388,6 +3432,7 @@ pub(crate) fn serialize_imports(
         skipped_lines: HashSet::new(),
         uses_template_strings: false,
         has_surrogates: false,
+        location_override: None,
     };
 
     // Write list of imports
@@ -3523,6 +3568,7 @@ mod tests {
             skipped_lines: HashSet::new(),
             uses_template_strings: false,
             has_surrogates: false,
+            location_override: None,
         }
     }
 
