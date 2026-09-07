@@ -1,7 +1,7 @@
 from typing import TypedDict, type_check_only
 from typing_extensions import NotRequired, TypeAlias
 
-__all__ = ["parse"]
+__all__ = ["parse", "parse_type_string"]
 
 _TypeIgnores: TypeAlias = list[tuple[int, list[str]]]
 
@@ -31,4 +31,9 @@ def parse(
     always_false: list[str] | None = None,
     cache_version: int = 0,
 ) -> tuple[bytes, list[ParseError], _TypeIgnores, bytes, _ASTData]:
+    ...
+
+def parse_type_string(
+    source: str, range: tuple[int, int, int, int], cache_version: int = 0
+) -> bytes:
     ...
