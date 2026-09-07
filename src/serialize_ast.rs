@@ -1868,6 +1868,16 @@ impl Ser for ast::Stmt {
                             if let Some(type_expr) = &h.type_ {
                                 ser.write_bool(true);
                                 type_expr.serialize(ser);
+                                if let ast::Expr::Tuple(t) = type_expr.as_ref() {
+                                    if !t.parenthesized {
+                                        ser.add_error(
+                                            "multiple exception types must be parenthesized"
+                                                .to_string(),
+                                            t.range(),
+                                            false,
+                                        );
+                                    }
+                                }
                             } else {
                                 ser.write_bool(false);
                             }
