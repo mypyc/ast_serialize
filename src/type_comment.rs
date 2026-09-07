@@ -107,9 +107,7 @@ pub fn parse_type_comments(comment: &str) -> Option<Vec<TypeComment>> {
         (after_type.trim_end(), None)
     };
 
-    if !type_annotation.is_empty() {
-        parts.push(TypeComment::TypeAnnotation(type_annotation.to_string()));
-    }
+    parts.push(TypeComment::TypeAnnotation(type_annotation.to_string()));
 
     // Check if there's a "# type: ignore" in the remainder
     if let Some(remainder_str) = remainder {
@@ -520,7 +518,10 @@ mod tests {
     fn test_type_comment_kind_not_type_comment() {
         assert_eq!(parse_type_comments("# regular comment"), None);
         assert_eq!(parse_type_comments("# TODO: fix this"), None);
-        assert_eq!(parse_type_comments("# type:"), None); // Empty annotation
+        assert_eq!(
+            parse_type_comments("# type:"), // Empty annotation
+            Some(vec![TypeComment::TypeAnnotation("".to_string())])
+        );
     }
 
     #[test]
