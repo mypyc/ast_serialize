@@ -857,6 +857,16 @@ fn extract_type_comments_and_ignores(
                                 });
                                 continue;
                             }
+                            // Special case: empty type comment is considered an error
+                            if annotation.is_empty() {
+                                type_comments.insert(
+                                    line_number,
+                                    ParsedTypeComment::Invalid(
+                                        "Syntax error in type comment \"\"".to_string(),
+                                    ),
+                                );
+                                continue;
+                            }
                             let wrapped = format!("({})", annotation);
                             let parse_result =
                                 parse_unchecked(&wrapped, ParseOptions::from(Mode::Expression));
