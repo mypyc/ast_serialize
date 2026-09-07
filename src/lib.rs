@@ -219,9 +219,10 @@ fn parse_type_string(
     range: (u32, u32, u32, u32),
     cache_version: u32,
 ) -> PyResult<Vec<u8>> {
-    // These should only affect reachability, so we can use default values here.
-    let python_version = get_default_python_version(py)?;
-    let platform = get_default_platform(py)?;
+    // These should only affect reachability, so we can use random values here
+    // (we use hardcoded instead of default ones for performance).
+    let python_version = (3, 10);
+    let platform = "linux".to_string();
 
     let ast_bytes = py
         .detach(|| {

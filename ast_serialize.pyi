@@ -1,7 +1,7 @@
 from typing import TypedDict, type_check_only
 from typing_extensions import NotRequired, TypeAlias
 
-__all__ = ["parse"]
+__all__ = ["parse", "parse_type_string"]
 
 _TypeIgnores: TypeAlias = list[tuple[int, list[str]]]
 
