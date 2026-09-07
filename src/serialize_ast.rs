@@ -1891,7 +1891,10 @@ impl Ser for ast::Stmt {
                                     // Python version checks for syntax features are usually
                                     // done on the mypy side, but in this case it is easier to
                                     // do it here (as it avoids storing/reading an extra flag).
-                                    if ser.options.python_version() < (3, 14) && !t.parenthesized {
+                                    if ser.options.python_version() < (3, 14)
+                                        && !t.parenthesized
+                                        && h.name.is_none()
+                                    {
                                         ser.add_error(
                                             "multiple exception types must be parenthesized"
                                                 .to_string(),
