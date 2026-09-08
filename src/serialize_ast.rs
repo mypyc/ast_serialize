@@ -1888,7 +1888,13 @@ impl Ser for ast::Stmt {
                                 ser.write_bool(true);
                                 type_expr.serialize(ser);
                                 if let ast::Expr::Tuple(t) = type_expr.as_ref() {
-                                    if !t.parenthesized {
+                                    // Python version checks for syntax features are usually
+                                    // done on the mypy side, but in this case it is easier to
+                                    // do it here (as it avoids storing/reading an extra flag).
+                                    if ser.options.python_version() < (3, 14)
+                                        && !t.parenthesized
+                                        && h.name.is_none()
+                                    {
                                         ser.add_error(
                                             "multiple exception types must be parenthesized"
                                                 .to_string(),
