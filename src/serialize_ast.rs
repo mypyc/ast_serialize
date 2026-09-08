@@ -196,7 +196,15 @@ pub(crate) fn serialize_python_file(
     let source_type = PySourceType::from(file_path);
     let source_text = match source {
         Some(source_text) => source_text,
-        None => &std::fs::read_to_string(file_path)?,
+        None => &{
+            let content = std::fs::read_to_string(file_path)?;
+            if !content.contains('\r') {
+                // Fast path: nothing to normalize.
+                content
+            } else {
+                content.replace("\r\n", "\n").replace("\r", "\n")
+            }
+        },
     };
 
     // Compute SHA1 hash of the source text (same as mypy's compute_hash)
