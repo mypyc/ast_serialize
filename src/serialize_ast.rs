@@ -194,20 +194,29 @@ pub(crate) fn serialize_python_file(
     Vec<(usize, String)>,
 )> {
     let source_type = PySourceType::from(file_path);
-    let source_text = match source {
+    let raw_source_text = match source {
         Some(source_text) => source_text,
         None => &std::fs::read_to_string(file_path)?,
     };
 
     // Compute SHA1 hash of the source text (same as mypy's compute_hash)
     let hash_hex = {
-        let hash = Sha1::digest(source_text.as_bytes());
+        let hash = Sha1::digest(raw_source_text.as_bytes());
         let mut hex = String::with_capacity(40);
         for byte in hash {
             write!(hex, "{byte:02x}").unwrap();
         }
         hex
     };
+
+    // Apply universal newlines after hashing to match Python parser.
+    let source_text = if !raw_source_text.contains('\r') {
+        // Fast path: nothing to normalize.
+        raw_source_text
+    } else {
+        &raw_source_text.replace("\r\n", "\n").replace("\r", "\n")
+    };
+
     let line_index = LineIndex::from_source_text(source_text);
     let is_stub_package = match file_path.file_name() {
         Some(file) => file.as_encoded_bytes() == b"__init__.pyi",
