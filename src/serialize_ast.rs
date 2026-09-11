@@ -359,10 +359,12 @@ pub(crate) fn serialize_python_file(
     ))
 }
 
-// Bit flags for import statement metadata
+// Bit flags for import statement metadata. Deserializers ignore unknown bits,
+// so adding a flag here doesn't require a cache version bump.
 const IMPORT_FLAG_TOP_LEVEL: u8 = 1 << 0; // true if import is not within a function
 const IMPORT_FLAG_UNREACHABLE: u8 = 1 << 1; // true if import is in unreachable code
 const IMPORT_FLAG_MYPY_ONLY: u8 = 1 << 2; // true if import is mypy-only (e.g., in TYPE_CHECKING block)
+const IMPORT_FLAG_LAZY: u8 = 1 << 3; // true if this is a lazy import (PEP 810), e.g. 'lazy import x'
 
 // Used to report which imports are used in a file
 pub(crate) enum ImportStatement {
@@ -1616,7 +1618,7 @@ impl Ser for ast::Stmt {
                 ser.write_location(a.range());
             }
             ast::Stmt::Import(i) => {
-                let flags = make_import_flags(ser);
+                let flags = make_import_flags(ser, i.is_lazy);
                 ser.write_tag(TAG_IMPORT);
                 // Write number of imports
                 ser.write_tagged_int(i.names.len() as i64);
@@ -1644,7 +1646,7 @@ impl Ser for ast::Stmt {
                 }
             }
             ast::Stmt::ImportFrom(ifrom) => {
-                let flags = make_import_flags(ser);
+                let flags = make_import_flags(ser, ifrom.is_lazy);
                 // Check if this is a wildcard import (from m import *)
                 if ifrom.names.len() == 1 && ifrom.names[0].name.as_str() == "*" {
                     // Serialize as ImportAll
@@ -3445,8 +3447,8 @@ fn extract_int_literal_value(expr: &ast::Expr) -> Option<i64> {
     }
 }
 
-/// Build import flags from current serializer state
-fn make_import_flags(ser: &Serializer) -> u8 {
+/// Build import flags from current serializer state and the `lazy` modifier of the statement
+fn make_import_flags(ser: &Serializer, is_lazy: bool) -> u8 {
     (if !ser.in_function {
         IMPORT_FLAG_TOP_LEVEL
     } else {
@@ -3459,7 +3461,7 @@ fn make_import_flags(ser: &Serializer) -> u8 {
         IMPORT_FLAG_MYPY_ONLY
     } else {
         0
-    })
+    }) | (if is_lazy { IMPORT_FLAG_LAZY } else { 0 })
 }
 
 /// Serialize a list of import statements to bytes.
@@ -4049,6 +4051,44 @@ mod tests {
         ];
 
         assert_eq!(bytes, expected);
+    }
+
+    /// Serialize `text` and return the import flags of each encountered import statement.
+    fn import_flags(text: &str) -> Vec<u8> {
+        let ast = parse_unchecked(text, ParseOptions::from(PySourceType::Python)).into_syntax();
+        let mut ser = make_ser(text);
+        ast.serialize(&mut ser);
+        ser.imports
+            .iter()
+            .map(|import| match import {
+                ImportStatement::Import { flags, .. }
+                | ImportStatement::ImportFrom { flags, .. }
+                | ImportStatement::ImportAll { flags, .. } => *flags,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_lazy_import_flag() {
+        // Lazy imports (PEP 810) set IMPORT_FLAG_LAZY.
+        let lazy = IMPORT_FLAG_TOP_LEVEL | IMPORT_FLAG_LAZY;
+        assert_eq!(import_flags("lazy import foo\n"), [lazy]);
+        assert_eq!(import_flags("lazy import foo as bar\n"), [lazy]);
+        assert_eq!(import_flags("lazy import foo, bar\n"), [lazy, lazy]);
+        assert_eq!(import_flags("lazy from foo import bar\n"), [lazy]);
+        assert_eq!(import_flags("lazy from foo import bar as baz\n"), [lazy]);
+        assert_eq!(import_flags("lazy from . import foo\n"), [lazy]);
+        // 'lazy from foo import *' is invalid, but we still serialize the flag.
+        assert_eq!(import_flags("lazy from foo import *\n"), [lazy]);
+
+        // Regular imports don't set the flag.
+        let plain = IMPORT_FLAG_TOP_LEVEL;
+        assert_eq!(import_flags("import foo\n"), [plain]);
+        assert_eq!(import_flags("from foo import bar\n"), [plain]);
+        assert_eq!(import_flags("from foo import *\n"), [plain]);
+        // 'lazy' is a soft keyword, so it can still be used as a name.
+        assert_eq!(import_flags("import foo as lazy\n"), [plain]);
+        assert_eq!(import_flags("from lazy import foo\n"), [plain]);
     }
 
     fn extract_mypy_comments(source: &str) -> Vec<(usize, String)> {
