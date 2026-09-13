@@ -1573,7 +1573,7 @@ impl Ser for ast::Stmt {
                 } else if let Some(ParsedTypeComment::Invalid(error)) = type_expr {
                     ser.add_error(error, a.range(), false);
                     ser.write_bool(true);
-                    serialize_invalid_type(ser, None);
+                    serialize_invalid_type(ser, None, None, None);
                     ser.write_location(a.range());
                     ser.write_end_tag();
                 } else {
@@ -2899,10 +2899,24 @@ fn serialize_fstring_elements(ser: &mut Serializer, elems: Vec<&ast::Interpolate
 
 /// Helper to serialize an invalid type annotation as RawExpressionType with typing.Any.
 /// This is used for expressions that are not valid in type contexts (e.g., 3.14, int + str).
-fn serialize_invalid_type(ser: &mut Serializer, note: Option<&[u8]>) {
+fn serialize_invalid_type(
+    ser: &mut Serializer,
+    note: Option<&[u8]>,
+    original_str_expr: Option<&str>,
+    original_str_fallback: Option<&str>,
+) {
     ser.write_tag(TAG_RAW_EXPRESSION_TYPE);
-    ser.write_bytes(b"typing.Any");
-    ser.write_tag(TAG_LITERAL_NONE);
+    if let Some(original_str_expr) = original_str_expr {
+        // Whenever this is called from parsing a string literal as type,
+        // convert it back to a regular (valid) RawExpressionType.
+        // This is needed for literal types (and matches old parser behavior).
+        ser.write_bytes(original_str_fallback.unwrap().as_bytes());
+        ser.write_bytes(original_str_expr.as_bytes());
+        return;
+    } else {
+        ser.write_bytes(b"typing.Any");
+        ser.write_tag(TAG_LITERAL_NONE);
+    }
     if ser.options.cache_version() >= CV_RAW_EXPRESSION_TYPE_NOTES {
         if let Some(note) = note {
             ser.write_bytes(note);
@@ -2990,12 +3004,12 @@ fn serialize_type(ser: &mut Serializer, t: &ast::Expr) {
                     ser.write_tagged_int(int_val);
                 } else {
                     // Integer too large for i64 - serialize as invalid type
-                    serialize_invalid_type(ser, None);
+                    serialize_invalid_type(ser, None, None, None);
                 }
             } else {
                 // Float/complex number literals are not valid in type annotations
                 // Serialize as invalid type
-                serialize_invalid_type(ser, None);
+                serialize_invalid_type(ser, None, None, None);
             }
         }
         ast::Expr::BinOp(e) => {
@@ -3006,7 +3020,7 @@ fn serialize_type(ser: &mut Serializer, t: &ast::Expr) {
             } else {
                 // Other binary operators are not valid in type annotations
                 // Serialize as invalid type
-                serialize_invalid_type(ser, None);
+                serialize_invalid_type(ser, None, None, None);
             }
         }
         ast::Expr::List(e) => {
@@ -3058,7 +3072,7 @@ fn serialize_type(ser: &mut Serializer, t: &ast::Expr) {
                     serialize_type(ser, &item.value);
                 }
             } else {
-                serialize_invalid_type(ser, None);
+                serialize_invalid_type(ser, None, None, None);
             }
         }
         ast::Expr::Call(c) => {
@@ -3080,7 +3094,7 @@ fn serialize_type(ser: &mut Serializer, t: &ast::Expr) {
             } else {
                 None
             };
-            serialize_invalid_type(ser, note.as_deref());
+            serialize_invalid_type(ser, note.as_deref(), None, None);
         }
         ast::Expr::EllipsisLiteral(_) => {
             ser.write_tag(TAG_ELLIPSIS_TYPE);
@@ -3106,7 +3120,7 @@ fn serialize_type(ser: &mut Serializer, t: &ast::Expr) {
                     return;
                 } else {
                     // Negative number too large - serialize as invalid type
-                    serialize_invalid_type(ser, None);
+                    serialize_invalid_type(ser, None, None, None);
                 }
             } else if matches!(e.op, ast::UnaryOp::UAdd) {
                 // Positive unary operator (+) - preserve the underlying value
@@ -3121,12 +3135,12 @@ fn serialize_type(ser: &mut Serializer, t: &ast::Expr) {
                     return;
                 } else {
                     // Number too large or not an integer - serialize as invalid type
-                    serialize_invalid_type(ser, None);
+                    serialize_invalid_type(ser, None, None, None);
                 }
             } else {
                 // Other unary operators (not, ~, etc.) are not valid in type annotations
                 // Serialize as invalid type
-                serialize_invalid_type(ser, None);
+                serialize_invalid_type(ser, None, None, None);
             }
         }
         ast::Expr::StringLiteral(s) => {
@@ -3157,7 +3171,7 @@ fn serialize_type(ser: &mut Serializer, t: &ast::Expr) {
         _ => {
             // Unsupported expression type in type annotation
             // Serialize as invalid type
-            serialize_invalid_type(ser, None);
+            serialize_invalid_type(ser, None, None, None);
         }
     }
     ser.write_location(t.range());
@@ -3322,7 +3336,7 @@ fn serialize_attribute_type(
     let mut v = Vec::new();
     if !get_qualified_type_name(&mut v, expr) {
         // Invalid expression for qualified name - serialize as invalid type
-        serialize_invalid_type(ser, None);
+        serialize_invalid_type(ser, None, original_str_expr, original_str_fallback);
         return;
     }
     ser.write_tag(TAG_UNBOUND_TYPE);
@@ -3355,7 +3369,7 @@ fn serialize_subscript_type(
     let mut v = Vec::new();
     if !get_qualified_type_name(&mut v, &subscript.value) {
         // Invalid expression for qualified name - serialize as invalid type
-        serialize_invalid_type(ser, None);
+        serialize_invalid_type(ser, None, original_str_expr, original_str_fallback);
         return;
     }
     ser.write_tag(TAG_UNBOUND_TYPE);
