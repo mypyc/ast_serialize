@@ -55,6 +55,8 @@ pub fn parse_type_comments(comment: &str) -> Option<Vec<TypeComment>> {
 
     let mut ignore_next = false;
     for part in trimmed.split("#") {
+        // Special case: ignore components prefixed with two hashes.
+        // This allows to ignore a type ignore, see test_commented_out_comment().
         if part == "" {
             ignore_next = true;
             continue;
