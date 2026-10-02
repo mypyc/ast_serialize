@@ -148,7 +148,7 @@ fn parse_error_codes(after_ignore: &str) -> Option<Vec<String>> {
         // Validate error codes syntax
         for error_code in &error_codes {
             for char in error_code.chars() {
-                if !char.is_alphanumeric() && char != '_' && char != '-' {
+                if !char.is_alphanumeric() && char != '_' && char != '-' && char != ':' {
                     return None;
                 }
             }
@@ -533,6 +533,13 @@ mod tests {
         let result = parse_type_comments("#  type:  int  ").unwrap();
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], TypeComment::TypeAnnotation(s) if s == "int"));
+    }
+
+    #[test]
+    fn test_type_ignore_colon_allowed() {
+        let result = parse_type_comments("# type: ignore[mypy:assign-rule_22]").unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(matches!(&result[0], TypeComment::TypeIgnore(s) if s[0] == "mypy:assign-rule_22"));
     }
 
     #[test]
