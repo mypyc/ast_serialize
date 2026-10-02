@@ -1,6 +1,6 @@
 [package]
 name = "mypy_parser"
-version = "0.11.2"
+version = "0.12.0"
 publish = false
 authors = ["Jukka Lehtosalo"]
 edition = "2021"
