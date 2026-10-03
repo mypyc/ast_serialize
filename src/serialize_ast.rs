@@ -2978,7 +2978,7 @@ fn serialize_type_in_list(ser: &mut Serializer, t: &ast::Expr) {
 fn serialize_type(ser: &mut Serializer, t: &ast::Expr) {
     match t {
         ast::Expr::Name(e) => {
-            serialize_simple_unbound_type(ser, e.id.as_bytes());
+            serialize_simple_unbound_type(ser, e.id.as_bytes(), None, None);
         }
         ast::Expr::Attribute(_e) => {
             serialize_attribute_type(ser, t, None, None);
@@ -2987,7 +2987,7 @@ fn serialize_type(ser: &mut Serializer, t: &ast::Expr) {
             serialize_subscript_type(ser, e, None, None);
         }
         ast::Expr::NoneLiteral(_) => {
-            serialize_simple_unbound_type(ser, b"None");
+            serialize_simple_unbound_type(ser, b"None", None, None);
         }
         ast::Expr::BooleanLiteral(b) => {
             // Serialize as RawExpressionType with bool value
@@ -3231,16 +3231,12 @@ fn serialize_string_type(ser: &mut Serializer, string_value: &str, range: TextRa
             // (UnboundType or UnionType in mypy terms, which are Name/Attribute/Subscript or BinOp with | in AST)
             match expr.as_mut() {
                 ast::Expr::Name(e) => {
-                    ser.write_tag(TAG_UNBOUND_TYPE);
-                    ser.write_bytes(e.id.as_bytes());
-                    ser.write_tag(TAG_LIST_GEN);
-                    ser.write_int(0);
-                    // Write empty_tuple_index
-                    ser.write_bool(false);
-                    // Write original_str_expr
-                    ser.write_bytes(string_value.as_bytes());
-                    // Write original_str_fallback
-                    ser.write_bytes(b"builtins.str");
+                    serialize_simple_unbound_type(
+                        ser,
+                        e.id.as_bytes(),
+                        Some(string_value),
+                        Some("builtins.str"),
+                    );
                     ser.write_location(range);
                     ser.write_end_tag();
                     return;
@@ -3276,6 +3272,17 @@ fn serialize_string_type(ser: &mut Serializer, string_value: &str, range: TextRa
                         Some(string_value),
                         Some("builtins.str"),
                     );
+                    return;
+                }
+                ast::Expr::NoneLiteral(_) => {
+                    serialize_simple_unbound_type(
+                        ser,
+                        b"None",
+                        Some(string_value),
+                        Some("builtins.str"),
+                    );
+                    ser.write_location(range);
+                    ser.write_end_tag();
                     return;
                 }
                 _ => {
@@ -3405,17 +3412,30 @@ fn serialize_subscript_type(
 }
 
 /// Serialize a simple unbound type (just a name like `int` or `None`).
-fn serialize_simple_unbound_type(ser: &mut Serializer, name: &[u8]) {
+fn serialize_simple_unbound_type(
+    ser: &mut Serializer,
+    name: &[u8],
+    original_str_expr: Option<&str>,
+    original_str_fallback: Option<&str>,
+) {
     ser.write_tag(TAG_UNBOUND_TYPE);
     ser.write_bytes(name);
     ser.write_tag(TAG_LIST_GEN);
     ser.write_int(0);
     // Write empty_tuple_index
     ser.write_bool(false);
-    // Write None for original_str_expr (optional field)
-    ser.write_tag(TAG_LITERAL_NONE);
-    // Write None for original_str_fallback (optional field)
-    ser.write_tag(TAG_LITERAL_NONE);
+    // Write optional original_str_expr
+    if let Some(s) = original_str_expr {
+        ser.write_bytes(s.as_bytes());
+    } else {
+        ser.write_tag(TAG_LITERAL_NONE);
+    }
+    // Write optional original_str_fallback
+    if let Some(s) = original_str_fallback {
+        ser.write_bytes(s.as_bytes());
+    } else {
+        ser.write_tag(TAG_LITERAL_NONE);
+    }
 }
 
 /// Helper to build a qualified type name from nested attributes (e.g., `foo.bar.Baz`).
