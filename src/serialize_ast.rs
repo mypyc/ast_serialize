@@ -846,6 +846,8 @@ fn extract_type_comments_and_ignores(
             }
 
             if let Some(parts) = type_comment::parse_type_comments(comment_text) {
+                let mut seen_type_ignore = false;
+                let mut seen_mypy_ignore = false;
                 for part in parts {
                     match part {
                         type_comment::TypeComment::InvalidIgnore(is_mypy) => {
@@ -861,10 +863,30 @@ fn extract_type_comments_and_ignores(
                             });
                         }
                         type_comment::TypeComment::TypeIgnore(error_codes) => {
+                            if seen_type_ignore {
+                                syntax_errors.push(SyntaxError {
+                                    line: line_number,
+                                    column,
+                                    message: "Multiple type ignores on the same line".to_string(),
+                                    blocker: false,
+                                });
+                                continue;
+                            }
                             type_ignore_lines.push((line_number, error_codes));
+                            seen_type_ignore = true;
                         }
                         type_comment::TypeComment::MypyIgnore(error_codes) => {
+                            if seen_mypy_ignore {
+                                syntax_errors.push(SyntaxError {
+                                    line: line_number,
+                                    column,
+                                    message: "Multiple mypy ignores on the same line".to_string(),
+                                    blocker: false,
+                                });
+                                continue;
+                            }
                             mypy_ignore_lines.push((line_number, error_codes));
+                            seen_mypy_ignore = true;
                         }
                         type_comment::TypeComment::TypeAnnotation(annotation) => {
                             if type_comments.contains_key(&line_number) {
@@ -3939,6 +3961,30 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn test_multiple_type_ignores_errors() {
+        let text = "x = 1  # type: ignore[foo] # type: ignore[bar]\n";
+        let opt = ParseOptions::from(PySourceType::Python);
+        let parsed = parse_unchecked(text, opt);
+        let line_index = LineIndex::from_source_text(text);
+
+        let (_, _, _, _, syntax_errors) =
+            extract_type_comments_and_ignores(parsed.tokens(), text, &line_index);
+        assert_eq!(syntax_errors.len(), 1);
+    }
+
+    #[test]
+    fn test_multiple_mypy_ignores_errors() {
+        let text = "x = 1  # mypy: ignore[foo] # mypy: ignore[bar]\n";
+        let opt = ParseOptions::from(PySourceType::Python);
+        let parsed = parse_unchecked(text, opt);
+        let line_index = LineIndex::from_source_text(text);
+
+        let (_, _, _, _, syntax_errors) =
+            extract_type_comments_and_ignores(parsed.tokens(), text, &line_index);
+        assert_eq!(syntax_errors.len(), 1);
     }
 
     #[test]
