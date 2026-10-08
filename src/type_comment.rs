@@ -50,11 +50,8 @@ pub fn parse_type_comments(comment: &str) -> Option<Vec<TypeComment>> {
     }
     let mut parts = Vec::new();
 
-    // Remove (one) leading '#' and whitespace (to match old parser behavior)
-    let trimmed = comment.strip_prefix('#').unwrap().trim_start();
-
     let mut ignore_next = false;
-    for part in trimmed.split("#") {
+    for part in comment.strip_prefix('#').unwrap().split("#") {
         // Special case: ignore components prefixed with two hashes.
         // This allows to ignore a type ignore, see test_commented_out_comment().
         if part == "" {
@@ -73,7 +70,7 @@ pub fn parse_type_comments(comment: &str) -> Option<Vec<TypeComment>> {
     if parts.is_empty() { None } else { Some(parts) }
 }
 
-fn parse_comment_part(part: &str) -> Option<TypeComment> {
+pub(crate) fn parse_comment_part(part: &str) -> Option<TypeComment> {
     let trimmed = part.trim();
     let mypy_comment = trimmed.starts_with("mypy:");
     // Check if it starts with "type:"
@@ -104,7 +101,9 @@ fn parse_comment_part(part: &str) -> Option<TypeComment> {
     }
 
     // Anything like `mypy: enable` etc. doesn't have any special meaning in this context.
-    if mypy_comment && !after_type.starts_with("ignore") {
+    // Note we do not flag it as an invalid ignore, since then some mypy inline configs
+    // may cause spurious errors.
+    if mypy_comment {
         return None;
     }
     Some(TypeComment::TypeAnnotation(after_type.to_string()))
@@ -552,6 +551,18 @@ mod tests {
         let result = parse_type_comments("# type: ignore[mypy:assign-rule_22]").unwrap();
         assert_eq!(result.len(), 1);
         assert!(matches!(&result[0], TypeComment::TypeIgnore(s) if s[0] == "mypy:assign-rule_22"));
+    }
+
+    #[test]
+    fn test_mypy_is_not_type() {
+        assert_eq!(parse_type_comments("# mypy: ignore-errors"), None);
+    }
+
+    #[test]
+    fn test_starting_empty_part_not_special() {
+        let result = parse_type_comments("# # type: ignore").unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(matches!(&result[0], TypeComment::TypeIgnore(codes) if codes.is_empty()));
     }
 
     #[test]

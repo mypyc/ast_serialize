@@ -23,7 +23,7 @@ use crate::reachability::{
     TruthValue, assert_will_always_fail, infer_condition_value, infer_pattern_value,
 };
 use crate::type_comment;
-use crate::type_comment::parse_func_type_comment;
+use crate::type_comment::{TypeComment, parse_comment_part, parse_func_type_comment};
 
 /// Syntax error information with location details
 #[derive(Debug, Clone)]
@@ -279,7 +279,9 @@ pub(crate) fn serialize_python_file(
 
     if first_ignore.is_some() {
         let (first_line, codes) = first_ignore.unwrap();
-        if first_line < first_statement_line {
+        if first_line < first_statement_line
+            && is_global_ignore_comment(parsed.tokens(), first_line, &line_index, source_text)
+        {
             top_unreachable = true;
             type_ignore_lines = Vec::new();
             if !codes.is_empty() {
@@ -442,6 +444,28 @@ fn is_surrogate(ord: u32) -> bool {
         return true;
     }
     false
+}
+
+// Parse type ignore comment on `line`, but now verify it is the first directive on that line.
+// So that `# something else # type: ignore` is not interpreted as a global ignore.
+fn is_global_ignore_comment(
+    tokens: &Tokens,
+    line: usize,
+    line_index: &LineIndex,
+    source_text: &str,
+) -> bool {
+    for token in tokens.iter() {
+        let token_line = line_index.line_column(token.start(), source_text).line;
+        if token_line.get() == line && token.kind().is_comment() {
+            let trimmed = source_text[token.range()].strip_prefix("#").unwrap();
+            let first_part = trimmed.split("#").next().unwrap();
+            if let Some(TypeComment::TypeIgnore(_)) = parse_comment_part(first_part) {
+                return true;
+            }
+            return false;
+        }
+    }
+    false // Should be unreachable, but just on case
 }
 
 struct Serializer<'a> {
@@ -3942,6 +3966,26 @@ mod tests {
 
         ast.serialize(&mut ser);
         assert!(!ser.has_surrogates);
+    }
+
+    #[test]
+    fn test_global_ignore_positive() {
+        let source = "# type: ignore\nsomething = else\n";
+        let path = write_temp_py("test_source", source);
+        let result = serialize_python_file(&path, None, false, Options::default()).unwrap();
+        // Check that we serialize empty module.
+        assert_eq!(result.0, &[TAG_LITERAL_INT, int_val(0)]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_global_ignore_negative() {
+        let source = "# something: else # type: ignore\nsomething = else\n";
+        let path = write_temp_py("test_source", source);
+        let result = serialize_python_file(&path, None, false, Options::default()).unwrap();
+        // Check that we serialize some non-trivial bytes.
+        assert!(result.0.len() > 40);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
