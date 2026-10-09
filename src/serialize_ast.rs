@@ -15,15 +15,15 @@ use thin_vec::ThinVec;
 
 use crate::func_effect_visitor;
 use crate::options::{
-    CV_DICT_KEY_OPT, CV_FUNC_TYPE_COMMENT_FLAG, CV_HANDLER_LOCATIONS, CV_IMPORT_FLAGS,
-    CV_RAW_EXPRESSION_TYPE_NOTES, CV_UNICODE_SURROGATE, Options,
+    CV_DICT_KEY_OPT, CV_FULL_TYPE_COMMENTS, CV_FUNC_TYPE_COMMENT_FLAG, CV_HANDLER_LOCATIONS,
+    CV_IMPORT_FLAGS, CV_RAW_EXPRESSION_TYPE_NOTES, CV_UNICODE_SURROGATE, Options,
 };
 use crate::reachability::TruthValue::AlwaysTrue;
 use crate::reachability::{
     TruthValue, assert_will_always_fail, infer_condition_value, infer_pattern_value,
 };
 use crate::type_comment;
-use crate::type_comment::{TypeComment, parse_comment_part, parse_func_type_comment};
+use crate::type_comment::parse_func_type_comment;
 
 /// Syntax error information with location details
 #[derive(Debug, Clone)]
@@ -257,7 +257,7 @@ pub(crate) fn serialize_python_file(
         type_comments,
         mypy_comments,
         tc_syntax_errors,
-    ) = extract_type_comments_and_ignores(parsed.tokens(), source_text, &line_index);
+    ) = extract_type_comments_and_ignores(parsed.tokens(), source_text, &line_index, &options);
     for syntax_error in tc_syntax_errors {
         syntax_errors.push(syntax_error);
     }
@@ -279,9 +279,7 @@ pub(crate) fn serialize_python_file(
 
     if first_ignore.is_some() {
         let (first_line, codes) = first_ignore.unwrap();
-        if first_line < first_statement_line
-            && is_global_ignore_comment(parsed.tokens(), first_line, &line_index, source_text)
-        {
+        if first_line < first_statement_line {
             top_unreachable = true;
             type_ignore_lines = Vec::new();
             if !codes.is_empty() {
@@ -444,28 +442,6 @@ fn is_surrogate(ord: u32) -> bool {
         return true;
     }
     false
-}
-
-// Parse type ignore comment on `line`, but now verify it is the first directive on that line.
-// So that `# something else # type: ignore` is not interpreted as a global ignore.
-fn is_global_ignore_comment(
-    tokens: &Tokens,
-    line: usize,
-    line_index: &LineIndex,
-    source_text: &str,
-) -> bool {
-    for token in tokens.iter() {
-        let token_line = line_index.line_column(token.start(), source_text).line;
-        if token_line.get() == line && token.kind().is_comment() {
-            let trimmed = source_text[token.range()].strip_prefix("#").unwrap();
-            let first_part = trimmed.split("#").next().unwrap();
-            if let Some(TypeComment::TypeIgnore(_)) = parse_comment_part(first_part) {
-                return true;
-            }
-            return false;
-        }
-    }
-    false // Should be unreachable, but just on case
 }
 
 struct Serializer<'a> {
@@ -832,6 +808,7 @@ fn extract_type_comments_and_ignores(
     tokens: &Tokens,
     source: &str,
     line_index: &LineIndex,
+    options: &Options,
 ) -> (
     Vec<(usize, Vec<String>)>,
     Vec<(usize, Vec<String>)>,
@@ -869,7 +846,17 @@ fn extract_type_comments_and_ignores(
                 }
             }
 
-            if let Some(parts) = type_comment::parse_type_comments(comment_text) {
+            let before_comment =
+                TextRange::new(line_index.line_start(location.line, source), token.start());
+            // Note: if the code before the comment is all whitespace, we extract only comment
+            // parts before the first unrecognized part. This helps to avoid:
+            // * Spurious unused type ignores in commented out blocks of code.
+            // * Accidental whole-file type ignore (if appears before first statement).
+            let skip_commented = source[before_comment.range()].trim().is_empty()
+                || options.cache_version() < CV_FULL_TYPE_COMMENTS;
+            if let Some(parts) =
+                type_comment::parse_type_comments_full(comment_text, skip_commented)
+            {
                 let mut seen_type_ignore = false;
                 let mut seen_mypy_ignore = false;
                 for part in parts {
@@ -3995,8 +3982,12 @@ mod tests {
         let parsed = parse_unchecked(text, opt);
         let line_index = LineIndex::from_source_text(text);
 
-        let (_, _, _, _, syntax_errors) =
-            extract_type_comments_and_ignores(parsed.tokens(), text, &line_index);
+        let (_, _, _, _, syntax_errors) = extract_type_comments_and_ignores(
+            parsed.tokens(),
+            text,
+            &line_index,
+            &Options::default(),
+        );
         assert_eq!(
             syntax_errors
                 .iter()
@@ -4014,8 +4005,12 @@ mod tests {
         let parsed = parse_unchecked(text, opt);
         let line_index = LineIndex::from_source_text(text);
 
-        let (_, _, _, _, syntax_errors) =
-            extract_type_comments_and_ignores(parsed.tokens(), text, &line_index);
+        let (_, _, _, _, syntax_errors) = extract_type_comments_and_ignores(
+            parsed.tokens(),
+            text,
+            &line_index,
+            &Options::default(),
+        );
         assert_eq!(syntax_errors.len(), 1);
     }
 
@@ -4026,8 +4021,12 @@ mod tests {
         let parsed = parse_unchecked(text, opt);
         let line_index = LineIndex::from_source_text(text);
 
-        let (_, _, _, _, syntax_errors) =
-            extract_type_comments_and_ignores(parsed.tokens(), text, &line_index);
+        let (_, _, _, _, syntax_errors) = extract_type_comments_and_ignores(
+            parsed.tokens(),
+            text,
+            &line_index,
+            &Options::default(),
+        );
         assert_eq!(syntax_errors.len(), 1);
     }
 
@@ -4218,8 +4217,12 @@ mod tests {
     fn extract_mypy_comments(source: &str) -> Vec<(usize, String)> {
         let parsed = parse_unchecked(source, ParseOptions::from(PySourceType::Python));
         let line_index = LineIndex::from_source_text(source);
-        let (_, _, _, mypy_comments, _) =
-            extract_type_comments_and_ignores(parsed.tokens(), source, &line_index);
+        let (_, _, _, mypy_comments, _) = extract_type_comments_and_ignores(
+            parsed.tokens(),
+            source,
+            &line_index,
+            &Options::default(),
+        );
         mypy_comments
     }
 

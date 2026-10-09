@@ -15,7 +15,7 @@ impl Default for Options {
             always_true: Vec::new(),
             always_false: Vec::new(),
             // Always set to latest supported version.
-            cache_version: 6,
+            cache_version: 7,
         }
     }
 }
@@ -32,6 +32,8 @@ pub(crate) const CV_DICT_KEY_OPT: u32 = 4;
 pub(crate) const CV_UNICODE_SURROGATE: u32 = 5;
 // Add flag specifying if type comment(s) were used for a function.
 pub(crate) const CV_FUNC_TYPE_COMMENT_FLAG: u32 = 6;
+// Extract all type comments and ignores, not just ones before the first unrecognized part.
+pub(crate) const CV_FULL_TYPE_COMMENTS: u32 = 7;
 
 impl Options {
     pub(crate) fn new(

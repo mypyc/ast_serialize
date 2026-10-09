@@ -19,6 +19,10 @@ pub enum TypeComment {
     InvalidIgnore(bool),
 }
 
+fn parse_type_comments(comment: &str) -> Option<Vec<TypeComment>> {
+    parse_type_comments_full(comment, false)
+}
+
 /// Parse a type comment and extract all parts (type annotation and/or type: ignore).
 ///
 /// # Arguments
@@ -33,17 +37,17 @@ pub enum TypeComment {
 /// # Examples
 ///
 /// ```
-/// use mypy_parser::type_comment::{parse_type_comments, TypeComment};
+/// use mypy_parser::type_comment::{parse_type_comments_full, TypeComment};
 ///
 /// // Pure type: ignore
-/// let result = parse_type_comments("# type: ignore").unwrap();
+/// let result = parse_type_comments_full("# type: ignore").unwrap();
 /// assert_eq!(result.len(), 1);
 ///
 /// // Type annotation with type: ignore on same line
-/// let result = parse_type_comments("# type: int  # type: ignore[arg-type]").unwrap();
+/// let result = parse_type_comments_full("# type: int  # type: ignore[arg-type]").unwrap();
 /// assert_eq!(result.len(), 2);  // Both annotation and ignore
 /// ```
-pub fn parse_type_comments(comment: &str) -> Option<Vec<TypeComment>> {
+pub fn parse_type_comments_full(comment: &str, skip_commented: bool) -> Option<Vec<TypeComment>> {
     if !comment.starts_with('#') {
         // Guard against some possible parse error recovery
         return None;
@@ -54,7 +58,7 @@ pub fn parse_type_comments(comment: &str) -> Option<Vec<TypeComment>> {
     for part in comment.strip_prefix('#').unwrap().split("#") {
         // Special case: ignore components prefixed with two hashes.
         // This allows to ignore a type ignore, see test_commented_out_comment().
-        if part == "" {
+        if part.trim() == "" {
             ignore_next = true;
             continue;
         }
@@ -64,6 +68,8 @@ pub fn parse_type_comments(comment: &str) -> Option<Vec<TypeComment>> {
         }
         if let Some(parsed) = parse_comment_part(part) {
             parts.push(parsed);
+        } else if skip_commented {
+            break;
         }
     }
 
@@ -338,6 +344,42 @@ mod tests {
     fn test_commented_out_comment() {
         assert_eq!(parse_type_comment("## type: ignore"), None);
         assert_eq!(parse_type_comment("## type: ignore[arg-type]"), None);
+
+        // Double-hash only deactivates the next directive/pragma, not all of them
+        let result = parse_type_comments("## type: ignore # type: ignore").unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(matches!(&result[0], TypeComment::TypeIgnore(s) if s.is_empty()));
+
+        let result = parse_type_comments("# type: ignore ## type: ignore").unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(matches!(&result[0], TypeComment::TypeIgnore(s) if s.is_empty()));
+    }
+
+    #[test]
+    fn test_empty_part_is_also_special() {
+        assert_eq!(parse_type_comments("# # type: ignore"), None);
+        assert_eq!(parse_type_comments("# # type: ignore[arg-type]"), None);
+
+        // Double-hash only deactivates the next directive/pragma, not all of them
+        let result = parse_type_comments("# # type: ignore # type: ignore").unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(matches!(&result[0], TypeComment::TypeIgnore(s) if s.is_empty()));
+
+        let result = parse_type_comments("# type: ignore # # type: ignore").unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(matches!(&result[0], TypeComment::TypeIgnore(s) if s.is_empty()));
+    }
+
+    #[test]
+    fn test_skip_commented() {
+        assert_eq!(
+            parse_type_comments_full("# x: str = 1 # type: ignore", true),
+            None
+        );
+        assert_eq!(
+            parse_type_comments_full("# avoid more # type: ignores", true),
+            None
+        );
     }
 
     #[test]
@@ -556,13 +598,6 @@ mod tests {
     #[test]
     fn test_mypy_is_not_type() {
         assert_eq!(parse_type_comments("# mypy: ignore-errors"), None);
-    }
-
-    #[test]
-    fn test_starting_empty_part_not_special() {
-        let result = parse_type_comments("# # type: ignore").unwrap();
-        assert_eq!(result.len(), 1);
-        assert!(matches!(&result[0], TypeComment::TypeIgnore(codes) if codes.is_empty()));
     }
 
     #[test]
