@@ -905,8 +905,7 @@ fn extract_type_comments_and_ignores(
                                     line: line_number,
                                     column,
                                     message: "Multiple type comments on the same line".to_string(),
-                                    // To match old parser behavior
-                                    blocker: true,
+                                    blocker: false,
                                 });
                                 continue;
                             }
@@ -3988,14 +3987,7 @@ mod tests {
             &line_index,
             &Options::default(),
         );
-        assert_eq!(
-            syntax_errors
-                .iter()
-                .filter(|e| e.blocker)
-                .collect::<Vec<&SyntaxError>>()
-                .len(),
-            1
-        );
+        assert_eq!(syntax_errors.iter().collect::<Vec<&SyntaxError>>().len(), 1);
     }
 
     #[test]
