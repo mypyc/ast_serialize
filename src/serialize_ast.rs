@@ -274,7 +274,23 @@ pub(crate) fn serialize_python_file(
     }
 
     let mut top_unreachable = false;
-    let first_ignore = type_ignore_lines.get(0).cloned();
+    // Find what is the first mypy/type ignore (if any).
+    let mut first_ignore = None;
+    if !type_ignore_lines.is_empty() || !mypy_ignore_lines.is_empty() {
+        if type_ignore_lines.is_empty() {
+            first_ignore = Some(mypy_ignore_lines[0].clone());
+        } else if mypy_ignore_lines.is_empty() {
+            first_ignore = Some(type_ignore_lines[0].clone());
+        } else {
+            let first_type_ignore = type_ignore_lines[0].clone();
+            let first_mypy_ignore = mypy_ignore_lines[0].clone();
+            if first_type_ignore.0 < first_mypy_ignore.0 {
+                first_ignore = Some(first_type_ignore);
+            } else {
+                first_ignore = Some(first_mypy_ignore);
+            }
+        }
+    };
     let first_statement_line = first_statement_line(parsed.syntax(), source_text, &line_index);
 
     if first_ignore.is_some() {
@@ -282,6 +298,7 @@ pub(crate) fn serialize_python_file(
         if first_line < first_statement_line {
             top_unreachable = true;
             type_ignore_lines = Vec::new();
+            mypy_ignore_lines = Vec::new();
             if !codes.is_empty() {
                 let joined = codes.join(", ");
                 let error = format!(
@@ -3965,12 +3982,42 @@ mod tests {
     }
 
     #[test]
+    fn test_global_mypy_ignore_positive() {
+        let source = "# mypy: ignore\nsomething = else\n";
+        let path = write_temp_py("test_source", source);
+        let result = serialize_python_file(&path, None, false, Options::default()).unwrap();
+        // Check that we serialize empty module.
+        assert_eq!(result.0, &[TAG_LITERAL_INT, int_val(0)]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn test_global_ignore_negative() {
         let source = "# something: else # type: ignore\nsomething = else\n";
         let path = write_temp_py("test_source", source);
         let result = serialize_python_file(&path, None, false, Options::default()).unwrap();
         // Check that we serialize some non-trivial bytes.
         assert!(result.0.len() > 40);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_global_mypy_ignore_negative() {
+        let source = "# mypy: ignore *some* errors\nsomething = else\n";
+        let path = write_temp_py("test_source", source);
+        let result = serialize_python_file(&path, None, false, Options::default()).unwrap();
+        // Check that we serialize some non-trivial bytes.
+        assert!(result.0.len() > 40);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_global_type_ignore_deletes_mypy_ignores() {
+        let source = "# type: ignore\nsomething = 1  # mypy: ignore\n";
+        let path = write_temp_py("test_source", source);
+        let result = serialize_python_file(&path, None, false, Options::default()).unwrap();
+        // Check that there are no mypy ignores.
+        assert!(result.3.is_empty());
         let _ = std::fs::remove_file(&path);
     }
 
