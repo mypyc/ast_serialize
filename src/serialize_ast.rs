@@ -535,21 +535,40 @@ impl<'a> Serializer<'a> {
             self.bytes.extend_from_slice(&x.to_le_bytes());
         } else {
             // Variable-length format
-            self.bytes.push(LONG_INT_TRAILER);
-            let neg = i < 0;
-            let absval = if neg {
-                i.wrapping_abs() as u64
-            } else {
-                i as u64
-            };
-            let bytes = absval.to_le_bytes();
+            let bytes = i.unsigned_abs().to_le_bytes();
             let mut n = bytes.len();
             while n > 1 && bytes[n - 1] == 0 {
                 n -= 1;
             }
-            self.write_int(((n as i64) << 1) | (neg as i64));
-            self.bytes.extend_from_slice(&bytes[..n]);
+            self.write_long_int(i < 0, &bytes[..n]);
         }
+    }
+
+    /// Write an int using the variable-length format, which supports arbitrarily large
+    /// values (this matches the format used by `write_int()` in `librt.internal`).
+    ///
+    /// `magnitude` is the absolute value as little-endian bytes, without trailing zeros.
+    fn write_long_int(&mut self, negative: bool, magnitude: &[u8]) {
+        self.bytes.push(LONG_INT_TRAILER);
+        self.write_int(((magnitude.len() as i64) << 1) | i64::from(negative));
+        self.bytes.extend_from_slice(magnitude);
+    }
+
+    /// Write a tagged int for an integer literal value that may not fit in i64.
+    fn write_tagged_int_literal(&mut self, value: &IntLiteralValue) {
+        self.write_tag(TAG_LITERAL_INT);
+        if let Some(abs) = value.abs.as_u64() {
+            let x = if value.negative {
+                -i128::from(abs)
+            } else {
+                i128::from(abs)
+            };
+            if let Ok(x) = i64::try_from(x) {
+                self.write_int(x);
+                return;
+            }
+        }
+        self.write_long_int(value.negative, &int_to_le_bytes(value.abs));
     }
 
     /// Find the largest byte offset <= target that is a UTF-8 character boundary.
@@ -3044,20 +3063,16 @@ fn serialize_type(ser: &mut Serializer, t: &ast::Expr) {
             ser.write_bytes(b"builtins.bool");
             ser.write_bool(b.value);
         }
-        ast::Expr::NumberLiteral(n) => {
-            // Serialize integer literals as RawExpressionType with int value
-            if n.value.is_int() {
-                if let Some(int_val) = extract_int_literal_value(t) {
-                    ser.write_tag(TAG_RAW_EXPRESSION_TYPE);
-                    ser.write_bytes(b"builtins.int");
-                    ser.write_tagged_int(int_val);
-                } else {
-                    // Integer too large for i64 - serialize as invalid type
-                    serialize_invalid_type(ser, None, None, None);
-                }
+        ast::Expr::NumberLiteral(_) | ast::Expr::UnaryOp(_) => {
+            // Serialize integer literals (e.g. in Literal[5], Literal[-5] or Literal[+5])
+            // as RawExpressionType with int value. Integers may be arbitrarily large.
+            if let Some(value) = extract_int_literal_value(t) {
+                ser.write_tag(TAG_RAW_EXPRESSION_TYPE);
+                ser.write_bytes(b"builtins.int");
+                ser.write_tagged_int_literal(&value);
             } else {
-                // Float/complex number literals are not valid in type annotations
-                // Serialize as invalid type
+                // Float/complex number literals and other unary operators (not, ~, etc.)
+                // are not valid in type annotations. Serialize as invalid type
                 serialize_invalid_type(ser, None, None, None);
             }
         }
@@ -3154,43 +3169,6 @@ fn serialize_type(ser: &mut Serializer, t: &ast::Expr) {
             serialize_type(ser, &e.value);
             // Write from_star_syntax flag (true for * syntax, false for Unpack[...])
             ser.write_bool(true);
-        }
-        ast::Expr::UnaryOp(e) => {
-            // Handle unary operators on integer literals in types
-            if matches!(e.op, ast::UnaryOp::USub) {
-                // Negative integer literal (e.g., Literal[-1])
-                if let Some(int_val) = extract_int_literal_value(t) {
-                    ser.write_tag(TAG_RAW_EXPRESSION_TYPE);
-                    ser.write_bytes(b"builtins.int");
-                    ser.write_tagged_int(int_val);
-                    // Return early since we've already written location and end tag below
-                    ser.write_location(e.range());
-                    ser.write_end_tag();
-                    return;
-                } else {
-                    // Negative number too large - serialize as invalid type
-                    serialize_invalid_type(ser, None, None, None);
-                }
-            } else if matches!(e.op, ast::UnaryOp::UAdd) {
-                // Positive unary operator (+) - preserve the underlying value
-                // This matches fastparse.py behavior where +5 returns the value unchanged
-                if let Some(int_val) = extract_int_literal_value(&e.operand) {
-                    ser.write_tag(TAG_RAW_EXPRESSION_TYPE);
-                    ser.write_bytes(b"builtins.int");
-                    ser.write_tagged_int(int_val);
-                    // Return early since we've already written location and end tag below
-                    ser.write_location(e.range());
-                    ser.write_end_tag();
-                    return;
-                } else {
-                    // Number too large or not an integer - serialize as invalid type
-                    serialize_invalid_type(ser, None, None, None);
-                }
-            } else {
-                // Other unary operators (not, ~, etc.) are not valid in type annotations
-                // Serialize as invalid type
-                serialize_invalid_type(ser, None, None, None);
-            }
         }
         ast::Expr::StringLiteral(s) => {
             // String literals in type context (forward references or Literal["x"])
@@ -3511,23 +3489,76 @@ fn get_qualified_type_name(v: &mut Vec<u8>, e: &ast::Expr) -> bool {
     }
 }
 
-/// Extract an integer literal value from a type expression, handling both
-/// positive literals (NumberLiteral) and negative literals (UnaryOp(USub, NumberLiteral)).
-fn extract_int_literal_value(expr: &ast::Expr) -> Option<i64> {
+/// Value of an integer literal in a type expression (such as `Literal[-5]`).
+/// The value can be arbitrarily large, since the absolute value is a Ruff `Int`.
+struct IntLiteralValue<'a> {
+    negative: bool,
+    abs: &'a ast::Int,
+}
+
+/// Extract an integer literal value from a type expression, handling plain literals
+/// (`NumberLiteral`) and literals with any number of unary minus/plus operators, such as
+/// `UnaryOp(USub, NumberLiteral)`. This matches `fastparse.py`, which accepts `-` and `+`.
+fn extract_int_literal_value(expr: &ast::Expr) -> Option<IntLiteralValue<'_>> {
     match expr {
         ast::Expr::NumberLiteral(n) => {
             if let Number::Int(int_val) = &n.value {
-                int_val.as_i64()
+                Some(IntLiteralValue {
+                    negative: false,
+                    abs: int_val,
+                })
             } else {
                 None
             }
         }
-        ast::Expr::UnaryOp(e) if matches!(e.op, ast::UnaryOp::USub) => {
-            // Recursively extract value from operand and negate it
-            extract_int_literal_value(&e.operand).map(|v| -v)
+        ast::Expr::UnaryOp(e) => {
+            let value = extract_int_literal_value(&e.operand)?;
+            match e.op {
+                // Recursively extract value from operand and negate it
+                ast::UnaryOp::USub => Some(IntLiteralValue {
+                    negative: !value.negative,
+                    ..value
+                }),
+                ast::UnaryOp::UAdd => Some(value),
+                _ => None,
+            }
         }
         _ => None,
     }
+}
+
+/// Convert a non-negative integer of arbitrary size to little-endian bytes, without
+/// trailing zero bytes.
+fn int_to_le_bytes(n: &ast::Int) -> Vec<u8> {
+    if let Some(x) = n.as_u64() {
+        let bytes = x.to_le_bytes();
+        let len = bytes.iter().rposition(|&b| b != 0).map_or(1, |i| i + 1);
+        return bytes[..len].to_vec();
+    }
+    // Ruff stores integers that don't fit in u64 using the source text of the literal,
+    // which may have a radix prefix and underscores (e.g. 0xFFFF_FFFF_FFFF_FFFF_FFFF).
+    let text = n.to_string();
+    let (radix, digits) = match text.get(..2) {
+        Some("0x" | "0X") => (16, &text[2..]),
+        Some("0o" | "0O") => (8, &text[2..]),
+        Some("0b" | "0B") => (2, &text[2..]),
+        _ => (10, text.as_str()),
+    };
+    let mut bytes: Vec<u8> = Vec::new();
+    for c in digits.chars().filter(|&c| c != '_') {
+        // Compute bytes = bytes * radix + digit
+        let mut carry = c.to_digit(radix).expect("lexer validated integer literal");
+        for b in &mut bytes {
+            let x = u32::from(*b) * radix + carry;
+            *b = (x & 0xff) as u8;
+            carry = x >> 8;
+        }
+        while carry > 0 {
+            bytes.push((carry & 0xff) as u8);
+            carry >>= 8;
+        }
+    }
+    bytes
 }
 
 /// Build import flags from current serializer state and the `lazy` modifier of the statement
@@ -3846,6 +3877,158 @@ mod tests {
         let mut ser = make_ser("");
         ser.write_int(536860912);
         assert_eq!(ser.bytes, &[15, 36, 240, 216, 255, 31]);
+
+        let mut ser = make_ser("");
+        ser.write_int(i64::MAX);
+        assert_eq!(ser.bytes, &[15, 52, 255, 255, 255, 255, 255, 255, 255, 127]);
+
+        let mut ser = make_ser("");
+        ser.write_int(i64::MIN);
+        assert_eq!(ser.bytes, &[15, 54, 0, 0, 0, 0, 0, 0, 0, 128]);
+    }
+
+    #[test]
+    fn test_write_arbitrary_long_int() {
+        let mut ser = make_ser("");
+        ser.write_long_int(false, &[0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        assert_eq!(ser.bytes, &[15, 56, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+
+        let mut ser = make_ser("");
+        ser.write_long_int(true, &[0xff; 16]);
+        let mut expected = vec![15, 86];
+        expected.extend_from_slice(&[0xff; 16]);
+        assert_eq!(ser.bytes, expected);
+    }
+
+    fn parse_int_for_test(text: &str) -> ast::Int {
+        let ast::Expr::NumberLiteral(n) = parse_expr_for_test(text) else {
+            panic!("expected number literal: {text}");
+        };
+        let Number::Int(i) = n.value else {
+            panic!("expected int literal: {text}");
+        };
+        i
+    }
+
+    #[test]
+    fn test_int_to_le_bytes() {
+        let cases = [
+            "0",
+            "1",
+            "255",
+            "256",
+            "0x_FF_FF",
+            "18446744073709551615",
+            "18446744073709551616",
+            "1_000_000_000_000_000_000_000",
+            "340282366920938463463374607431768211455",
+            "0xCBF29CE484222325",
+            "0XCBF29CE484222325CBF29CE4",
+            "0x_FFFF_FFFF_FFFF_FFFF_FFFF",
+            "0o7777777777777777777777777",
+            "0O1_000_000_000_000_000_000_000",
+            "0b11111111111111111111111111111111111111111111111111111111111111111",
+            "0B1_0000000000000000000000000000000000000000000000000000000000000000",
+        ];
+        for text in cases {
+            let (radix, digits) = match text.get(..2) {
+                Some("0x" | "0X") => (16, &text[2..]),
+                Some("0o" | "0O") => (8, &text[2..]),
+                Some("0b" | "0B") => (2, &text[2..]),
+                _ => (10, text),
+            };
+            let value = u128::from_str_radix(&digits.replace('_', ""), radix).unwrap();
+            let bytes = value.to_le_bytes();
+            let len = bytes.iter().rposition(|&b| b != 0).map_or(1, |i| i + 1);
+            assert_eq!(
+                int_to_le_bytes(&parse_int_for_test(text)),
+                &bytes[..len],
+                "{text}"
+            );
+        }
+    }
+
+    fn serialize_type_for_test(text: &str) -> Vec<u8> {
+        let mut ser = make_ser(text);
+        serialize_type(&mut ser, &parse_expr_for_test(text));
+        ser.bytes
+    }
+
+    fn int_literal_type_prefix(write_value: impl FnOnce(&mut Serializer)) -> Vec<u8> {
+        let mut ser = make_ser("");
+        ser.write_tag(TAG_RAW_EXPRESSION_TYPE);
+        ser.write_bytes(b"builtins.int");
+        ser.write_tag(TAG_LITERAL_INT);
+        write_value(&mut ser);
+        ser.bytes
+    }
+
+    #[test]
+    fn test_serialize_int_literal_type() {
+        // Values that fit in i64
+        let cases = [
+            ("5", 5),
+            ("-5", -5),
+            ("+5", 5),
+            ("+-5", -5),
+            ("-+5", -5),
+            ("--5", 5),
+            ("-0", 0),
+            ("1_000_000_000_000", 1_000_000_000_000),
+            ("9223372036854775807", i64::MAX),
+            ("-9223372036854775807", -i64::MAX),
+            ("-9223372036854775808", i64::MIN),
+            ("--9223372036854775807", i64::MAX),
+        ];
+        for (text, value) in cases {
+            let expected = int_literal_type_prefix(|ser| ser.write_int(value));
+            assert!(
+                serialize_type_for_test(text).starts_with(&expected),
+                "{text}"
+            );
+        }
+
+        // Values that don't fit in i64
+        let cases: [(&str, bool, &[u8]); 8] = [
+            ("9223372036854775808", false, &[0, 0, 0, 0, 0, 0, 0, 128]),
+            ("--9223372036854775808", false, &[0, 0, 0, 0, 0, 0, 0, 128]),
+            ("-9223372036854775809", true, &[1, 0, 0, 0, 0, 0, 0, 128]),
+            ("18_446_744_073_709_551_615", false, &[255; 8]),
+            (
+                "0xCBF29CE484222325",
+                false,
+                &[0x25, 0x23, 0x22, 0x84, 0xe4, 0x9c, 0xf2, 0xcb],
+            ),
+            ("-18446744073709551616", true, &[0, 0, 0, 0, 0, 0, 0, 0, 1]),
+            (
+                "+0x_1_0000_0000_0000_0000",
+                false,
+                &[0, 0, 0, 0, 0, 0, 0, 0, 1],
+            ),
+            (
+                "-0xFFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF_FFFF",
+                true,
+                &[255; 16],
+            ),
+        ];
+        for (text, negative, magnitude) in cases {
+            let expected = int_literal_type_prefix(|ser| ser.write_long_int(negative, magnitude));
+            assert!(
+                serialize_type_for_test(text).starts_with(&expected),
+                "{text}"
+            );
+        }
+
+        // Not integer literals
+        let mut ser = make_ser("");
+        serialize_invalid_type(&mut ser, None, None, None);
+        let invalid = ser.bytes;
+        for text in ["1.5", "-1.5", "1j", "~5", "-True", "not 5", "-x"] {
+            assert!(
+                serialize_type_for_test(text).starts_with(&invalid),
+                "{text}"
+            );
+        }
     }
 
     #[test]
